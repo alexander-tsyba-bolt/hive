@@ -1,0 +1,12 @@
+{
+  "name": "Hive",
+  "short_name": "Hive",
+  "description": "Your swarm of Claude Code sessions and background agents in one grid",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f8fa",
+  "theme_color": "#D97757",
+  "icons": [
+    { "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any maskable" }
+  ]
+}

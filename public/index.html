@@ -1,0 +1,1715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hive</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#D97757">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Hive">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="stylesheet" href="/xterm.css">
+  <style>
+    /* Make file links show pointer cursor in terminal */
+    .xterm .xterm-rows span[style*="cursor: pointer"], .xterm-link-layer { cursor: pointer; }
+  </style>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f6f8fa;
+      --surface: #ffffff;
+      --surface2: #f1f4f9;
+      --border: #d0d7de;
+      --border2: #afb8c1;
+      --text: #1f2328;
+      --text-dim: #656d76;
+      --text-faint: #afb8c1;
+      --accent: #0969da;
+      --green: #1a7f37;
+      --red: #cf222e;
+      --orange: #9a6700;
+      --purple: #8250df;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --mono: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+    }
+
+    html, body { height: 100%; overflow: hidden; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      height: 50px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .header-title { font-size: 14px; font-weight: 600; color: var(--text); }
+
+    .header-count {
+      font-size: 12px;
+      color: var(--text-dim);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      padding: 1px 7px;
+      border-radius: 10px;
+    }
+
+    .header-sep { flex: 1; }
+
+    .header-filter {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      color: var(--text-dim);
+      cursor: pointer;
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: border-color 0.1s, background 0.1s;
+      white-space: nowrap;
+    }
+
+    .btn:hover { border-color: var(--border2); background: var(--surface2); }
+    .btn-primary { background: #0969da; border-color: #0969da; color: #fff; }
+    .btn-primary:hover { background: #0860ca; border-color: #0860ca; }
+    .btn-danger { color: var(--red); }
+    .btn-danger:hover { border-color: var(--red); background: #ffebe9; }
+    .btn-ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
+    .btn-ghost:hover { background: var(--surface2); border-color: var(--border); color: var(--text); }
+    .btn-sm { padding: 3px 8px; font-size: 11px; }
+
+    /* ── Group filter bar ── */
+    .group-bar {
+      padding: 8px 16px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;          /* wrap instead of scroll */
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+
+    .group-bar:empty { display: none; }
+    .group-divider {
+      width: 1px; background: var(--border);
+      align-self: stretch; margin: 0 4px; flex-shrink: 0;
+    }
+    /* In narrow (wrapped) layout the vertical divider looks odd — hide it */
+    @media (max-width: 400px) { .group-divider { display: none; } }
+
+    .group-pill {
+      padding: 3px 11px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--text-dim);
+      background: var(--surface2);
+      white-space: nowrap;
+      transition: all 0.1s;
+      user-select: none;
+    }
+
+    .group-pill:hover { border-color: var(--border2); color: var(--text); }
+    .group-pill.active { background: #ddf4ff; border-color: #54aeff; color: var(--accent); font-weight: 600; }
+
+    /* ── Main layout ── */
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+
+    /* ── Sessions panel ── */
+    .sessions-panel { overflow-y: auto; flex-shrink: 0; display: flex; flex-direction: column; }
+
+    /* ── Side-by-side layout when terminals are open ── */
+    .main.layout-split { flex-direction: row; }
+    .main.layout-split .sessions-panel {
+      width: 340px;
+      min-width: 240px;
+      max-width: 40%;
+      flex-shrink: 0;
+      max-height: unset;
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+    }
+    .main.layout-split .terminals-panel {
+      flex: 1;
+      border-top: none;
+      border-left: none;
+      min-width: 0;
+    }
+    .main.layout-split .group-bar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--surface);
+    }
+    .open-sessions-section { border-bottom: 2px solid rgba(9,105,218,0.2); padding-bottom: 4px; }
+    .open-sessions-header { padding: 10px 16px 0; font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em; }
+    .needs-input-section { border-bottom: 2px solid rgba(154,103,0,0.25); padding-bottom: 4px; background: #fffcf0; }
+    .needs-input-header { padding: 10px 16px 0; font-size: 11px; font-weight: 700; color: var(--orange); text-transform: uppercase; letter-spacing: 0.06em; }
+
+    .sessions-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+      gap: 10px;
+      padding: 14px 16px;
+    }
+
+    /* ── Session card ── */
+    .session-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .session-card:hover { border-color: var(--border2); }
+    .session-card.archived { opacity: 0.5; }
+
+    .card-badges { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .bdot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+    .badge-running { background: #dafbe1; color: var(--green); border: 1px solid #a0e5b0; }
+    .badge-running .bdot { background: var(--green); animation: pulse 1.4s infinite; }
+    .badge-waiting { background: #fff8c5; color: var(--orange); border: 1px solid #f5c940; }
+    .badge-waiting .bdot { background: var(--orange); animation: pulse 2s ease-in-out infinite; }
+    .badge-done { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); }
+    .badge-done .bdot { background: var(--text-faint); }
+    .badge-idle { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); }
+    .badge-idle .bdot { background: var(--text-faint); }
+    .badge-failed { background: #ffebe9; color: var(--red); border: 1px solid #ffc1ba; }
+    .badge-failed .bdot { background: var(--red); }
+    .badge-job { background: #ddf4ff; color: var(--accent); border: 1px solid #b6e3ff; cursor: help; }
+    .badge-model { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); font-family: var(--mono); font-size: 9px; }
+    .badge-effort { background: #fff8c5; color: var(--orange); border: 1px solid #f5d57a; font-family: var(--mono); font-size: 9px; }
+    .badge-group { background: #eee8fd; color: var(--purple); border: 1px solid #d8b4fe; cursor: pointer; }
+    .badge-group:hover { background: #e2d9fb; }
+
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+
+    .card-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: text;
+      border-radius: 3px;
+      padding: 1px 2px;
+    }
+
+    .card-name:hover { background: #f1f4f9; }
+
+    .rename-input {
+      width: 100%;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: var(--font);
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--accent);
+      border-radius: 4px;
+      padding: 1px 5px;
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(9,105,218,0.12);
+    }
+
+    .card-cwd {
+      font-size: 10px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .card-time { font-size: 11px; color: var(--text-faint); }
+
+    .card-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 3px; }
+
+    /* ── Terminals panel ── */
+    .terminals-panel {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border-top: 2px solid var(--border);
+    }
+
+    .terminals-panel.hidden { display: none; }
+
+    .terminals-grid {
+      flex: 1;
+      display: grid;
+      grid-auto-rows: 1fr;   /* equal row heights regardless of content */
+      gap: 4px;
+      padding: 4px;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .terminal-pane {
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .terminal-titlebar {
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      padding: 4px 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+
+    .terminal-titlebar-name { flex: 1; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .terminal-titlebar-chips { display: flex; gap: 4px; align-items: center; flex-shrink: 0; margin: 0 8px; }
+    .session-card.open { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(9,105,218,0.1); }
+    .badge-open { background: #ddf4ff; color: var(--accent); border: 1px solid #b6e3ff; }
+    .badge-team { background: #fdf0e6; color: #9a4f00; border: 1px solid #f3c89a; cursor: help; }
+    .card-team { font-size: 10px; color: #9a4f00; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Drag-to-reorder terminals (handle = titlebar) */
+    .terminal-titlebar { cursor: grab; user-select: none; }
+    .terminal-titlebar:active { cursor: grabbing; }
+    .terminal-pane.dragging { opacity: 0.45; }
+    .terminal-pane.drag-over { outline: 2px dashed var(--accent); outline-offset: -3px; }
+
+    .terminal-close {
+      background: none;
+      border: none;
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      padding: 0 2px;
+      border-radius: 3px;
+    }
+
+    .terminal-close:hover { color: var(--text); background: var(--border); }
+
+    .terminal-pane { background: var(--surface); }
+    .terminal-body { flex: 1; min-height: 0; padding: 4px 6px; overflow: hidden; background: #fff; }
+    .terminal-body .xterm { height: 100%; }
+    .terminal-body .xterm-viewport { overflow-y: auto !important; }
+
+    /* ── State messages ── */
+    .state-msg {
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--text-faint);
+      font-size: 13px;
+      grid-column: 1 / -1;
+    }
+
+    /* ── Modals ── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px 24px 20px;
+      width: 400px;
+      max-width: 92vw;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    }
+
+    .modal h2 { font-size: 15px; font-weight: 600; margin-bottom: 18px; }
+
+    .form-row { margin-bottom: 14px; }
+    .form-label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 5px; font-weight: 500; }
+    .form-hint { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
+
+    .form-ctrl {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: var(--text);
+      font-size: 13px;
+      font-family: var(--font);
+      outline: none;
+    }
+
+    .form-ctrl:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(9,105,218,0.12); }
+    select.form-ctrl { cursor: pointer; }
+
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+    .modal-actions-split { display: flex; gap: 8px; margin-top: 18px; }
+    .modal-actions-split .left { flex: 1; }
+    .modal-actions-split .right { display: flex; gap: 8px; }
+    .modal p code { background: var(--surface2); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-family: var(--mono); font-size: 11px; }
+    #modal-agent .btn {
+      text-align: left;
+      padding: 10px 14px;
+      height: auto;
+      line-height: 1.4;
+      white-space: normal;    /* allow subtitle to wrap */
+    }
+
+    /* ── Scrollbars ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border2); }
+  </style>
+</head>
+<body>
+
+<header>
+  <img src="/icon.svg" width="22" height="22" style="border-radius:5px;flex-shrink:0" alt="">
+  <span class="header-title">Hive</span>
+  <span class="header-count" id="hdr-count">–</span>
+  <div class="header-sep"></div>
+  <label class="header-filter">
+    <input type="checkbox" id="show-archived"> Show archived
+  </label>
+  <button class="btn btn-ghost" onclick="openModal('modal-settings')" title="Settings">⚙ Settings</button>
+  <button class="btn" onclick="loadSessions()">↺ Refresh</button>
+  <button class="btn btn-primary" onclick="openNewModal()">+ New Session</button>
+</header>
+
+<div class="main" id="main">
+  <div class="sessions-panel" id="sessions-panel">
+  <div class="group-bar" id="group-bar"></div>
+    <div class="needs-input-section" id="needs-input-section" style="display:none">
+      <div class="needs-input-header" id="needs-input-header"></div>
+      <div class="sessions-grid" id="needs-input-grid"></div>
+    </div>
+    <div class="open-sessions-section" id="open-sessions-section" style="display:none">
+      <div class="open-sessions-header" id="open-sessions-header"></div>
+      <div class="sessions-grid" id="open-sessions-grid"></div>
+    </div>
+    <div class="sessions-grid" id="sessions-grid">
+      <div class="state-msg">Loading sessions…</div>
+    </div>
+  </div>  <!-- end sessions-panel -->
+
+  <div class="terminals-panel hidden" id="terminals-panel">
+    <div class="terminals-grid" id="terminals-grid"></div>
+  </div>
+</div>
+
+<!-- New Session Modal -->
+<div class="modal-overlay" id="modal-new">
+  <div class="modal">
+    <h2>New Session</h2>
+    <div class="form-row">
+      <label class="form-label">Model</label>
+      <select class="form-ctrl" id="new-model">
+        <option value="claude-opus-4-8">claude-opus-4-8 — most capable</option>
+        <option value="claude-sonnet-4-6[1m]" selected>claude-sonnet-4-6 (1M) — balanced</option>
+        <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+        <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 — fast</option>
+        <option value="claude-fable-5">claude-fable-5</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Effort</label>
+      <select class="form-ctrl" id="new-effort">
+        <option value="max">max</option>
+        <option value="xhigh" selected>xhigh</option>
+        <option value="high">high</option>
+        <option value="medium">medium</option>
+        <option value="low">low</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Working Directory</label>
+      <input class="form-ctrl" id="new-cwd" type="text" placeholder="~/">
+      <div class="form-hint">Leave blank to use the default working directory.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-new')">Cancel</button>
+      <button class="btn btn-primary" onclick="launchNewSession()">Launch</button>
+    </div>
+  </div>
+</div>
+
+<!-- Group Modal -->
+<div class="modal-overlay" id="modal-group">
+  <div class="modal">
+    <h2>Assign Group</h2>
+    <div class="form-row">
+      <label class="form-label">Group Name</label>
+      <input class="form-ctrl" id="group-input" list="group-datalist" placeholder="e.g. Work, Background, Personal…" autocomplete="off">
+      <datalist id="group-datalist"></datalist>
+      <div class="form-hint">Type to create a new group or pick an existing one.</div>
+    </div>
+    <div class="modal-actions-split">
+      <div class="left">
+        <button class="btn btn-danger" onclick="saveGroup(true)">Clear Group</button>
+      </div>
+      <div class="right">
+        <button class="btn" onclick="closeModal('modal-group')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveGroup(false)">Assign</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Running Agent Modal -->
+<div class="modal-overlay" id="modal-agent">
+  <div class="modal">
+    <h2>Running Background Agent</h2>
+    <p id="agent-modal-msg" style="font-size:13px;color:var(--text-dim);margin-bottom:18px;line-height:1.5"></p>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <button class="btn btn-primary" id="agent-attach-btn" onclick="agentAction('attach')">
+        Open Agent Manager
+        <span style="display:block;font-size:11px;font-weight:400;opacity:.8;margin-top:1px">Spawns <code>claude agents</code> TUI — navigate and attach interactively</span>
+      </button>
+      <button class="btn" onclick="agentAction('fork')">
+        Fork &amp; Open
+        <span style="display:block;font-size:11px;font-weight:400;opacity:.8;margin-top:1px">Creates a new session with a copy of history. Original keeps running.</span>
+      </button>
+      <button class="btn btn-ghost" onclick="closeModal('modal-agent')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="modal-settings">
+  <div class="modal">
+    <h2>Settings</h2>
+    <div class="form-row">
+      <label class="form-label">Default Working Directory</label>
+      <input class="form-ctrl" id="settings-cwd" type="text" placeholder="~/">
+      <div class="form-hint">Used when opening a session without an explicit directory.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('modal-settings')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="/xterm.js"></script>
+<script src="/xterm-addon-fit.js"></script>
+<script src="/xterm-addon-web-links.js"></script>
+<script>
+  let sessions = [];
+  let sessionMap = new Map();
+  let openTerminals = new Map();   // termId -> { xterm, fitAddon, ws, ro, sessionId }
+  let openSessionIds = new Set();   // session IDs with an open terminal
+  let pendingAgentOpen = null;      // session waiting for attach/fork choice
+  let activeGroup = null;    // null = all groups
+  let activeState = null;    // null = all states
+  let activeSource = null;   // null = all | 'job' | 'history'
+  let homeDir = '~';
+  let defaultCwd = '';
+  let editingSessionId = null;      // session id whose name is being edited inline
+  let terminalOrder = [];           // termIds in grid display order (drag-reorderable)
+  let draggingTermId = null;        // termId currently being dragged
+  let prevSessionStates = new Map(); // sessionId -> state, for detecting waiting transitions
+  let termWaitingSessionIds = new Set(); // session IDs whose open terminal is showing an interactive prompt
+
+  // JSONL name takes priority over Hive meta name (both sources write to JSONL now).
+  // Fall back to meta customName for sessions where jmName is absent.
+  function displayName(s) { return s.jmName || s.customName || s.name; }
+
+  // Safe string for use inside onclick="fn('...')" attributes
+  function safeAttr(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+
+  // ── Interactive prompt detection ──────────────────────────────────────────
+  // Scan the last N visible rows of an xterm.js buffer for Claude Code's
+  // interactive prompt footer ("Esc to cancel"). Uses translateToString() on
+  // the already-rendered buffer so no ANSI stripping is needed.
+  function checkTerminalWaiting(termId, entry) {
+    if (!entry.sessionId || !entry.xterm) return;
+    const buf = entry.xterm.buffer.active;
+    const rows = entry.xterm.rows;
+    const vp = buf.viewportY;
+    let promptFound = false;
+    for (let r = vp + rows - 1; r >= Math.max(0, vp + rows - 8); r--) {
+      const line = buf.getLine(r);
+      if (!line) continue;
+      if (/esc to cancel/i.test(line.translateToString(true))) { promptFound = true; break; }
+    }
+    const sid = entry.sessionId;
+    const wasWaiting = termWaitingSessionIds.has(sid);
+    if (promptFound && !wasWaiting) {
+      termWaitingSessionIds.add(sid);
+      const s = sessionMap.get(sid);
+      if (s) fireWaitingNotification(s);
+      renderSessions();
+    } else if (!promptFound && wasWaiting) {
+      termWaitingSessionIds.delete(sid);
+      renderSessions();
+    }
+  }
+
+  // Debounced: coalesce rapid data chunks into one check per animation frame.
+  function scheduleWaitingCheck(termId, entry) {
+    if (entry._waitRaf) cancelAnimationFrame(entry._waitRaf);
+    entry._waitRaf = requestAnimationFrame(() => {
+      entry._waitRaf = null;
+      checkTerminalWaiting(termId, entry);
+    });
+  }
+
+  // ── Notifications ─────────────────────────────────────────────────────────
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+
+  function fireWaitingNotification(s) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    if (document.hasFocus()) return; // user is already looking at Hive — no need to interrupt
+    const name = displayName(s);
+    new Notification('Claude needs your input', {
+      body: `"${name}" is waiting for a response`,
+      icon: '/icon.svg',
+      tag: `needs-input-${s.id}`,
+    });
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+
+  document.getElementById('show-archived').addEventListener('change', renderSessions);
+
+  fetch('/api/info').then(r => r.json()).then(info => {
+    homeDir = info.home;
+    defaultCwd = info.defaultCwd || info.home;
+    document.getElementById('new-cwd').placeholder = defaultCwd;
+    document.getElementById('settings-cwd').value = defaultCwd;
+  });
+
+  loadSessions();
+  // Reopen terminals that were live before a reload (reconnects to surviving PTYs).
+  // Deferred so the consts it depends on (defined later in this script) are initialised.
+  setTimeout(restoreTerminals, 0);
+  // Refresh more frequently when terminals are open (new session files appear within seconds)
+  let refreshTimer = setInterval(loadSessions, 30000);
+  function rescheduleRefresh() {
+    clearInterval(refreshTimer);
+    refreshTimer = setInterval(loadSessions, openTerminals.size > 0 ? 5000 : 30000);
+  }
+
+  // ── Data ──────────────────────────────────────────────────────────────────
+
+  async function loadSessions() {
+    try {
+      const res = await fetch('/api/sessions');
+      const newSessions = await res.json();
+      // Detect sessions that just entered waiting state and notify.
+      for (const s of newSessions) {
+        const prev = prevSessionStates.get(s.id);
+        if (s.state === 'waiting' && prev !== undefined && prev !== 'waiting') {
+          fireWaitingNotification(s);
+        }
+        prevSessionStates.set(s.id, s.state);
+      }
+      sessions = newSessions;
+      linkAndUpdateTerminalTitles(); // discover new sessions + sync titles
+      renderSessions();
+    } catch (err) {
+      document.getElementById('sessions-grid').innerHTML = `
+        <div class="state-msg" style="line-height:2">
+          <strong style="color:var(--text)">Server not running</strong><br>
+          <code style="background:var(--surface2);padding:4px 10px;border-radius:5px;font-size:12px;border:1px solid var(--border)">cd ~/Developer/claude-sessions &amp;&amp; npm start</code><br>
+          <button class="btn btn-primary" style="margin-top:12px" onclick="loadSessions()">↺ Retry</button>
+        </div>`;
+    }
+  }
+
+  // After each session reload: link unlinked terminals to their discovered session,
+  // and update terminal titlebars whenever a session name changes.
+  function linkAndUpdateTerminalTitles() {
+    const sessionById = new Map(sessions.map(s => [s.id, s]));
+
+    for (const [termId, t] of openTerminals) {
+      // Link pending terminals (new sessions with unknown ID at launch time)
+      if (!t.sessionId && t.pendingCwd !== undefined) {
+        const candidate = sessions.find(s =>
+          !openSessionIds.has(s.id) &&
+          new Date(s.lastActivity).getTime() >= t.startedAt - 5000 &&
+          s.cwd === t.pendingCwd
+        );
+        if (candidate) {
+          t.sessionId = candidate.id;
+          openSessionIds.add(candidate.id);
+          delete t.pendingCwd;
+          // Persist the launch model/effort so the card can show them — interactive
+          // sessions don't record effort anywhere we can read back (bug 4).
+          if (t.launchModel || t.launchEffort) {
+            fetch(`/api/sessions/${candidate.id}`, {
+              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: t.launchModel || undefined, effort: t.launchEffort || undefined }),
+            }).catch(() => {});
+          }
+          // Don't delete t.startedAt — still needed as sentinel for pendingCwd check
+          renderSessions(); // update card highlight
+        }
+      }
+
+      // Update titlebar for any linked terminal (unless it has a fixed label)
+      if (t.sessionId && !t.fixedTitle) {
+        const s = sessionById.get(t.sessionId);
+        if (s) {
+          const name = displayName(s);
+          t.name = name; // keep in sync for persistence/restore
+          const el = document.getElementById(`tname-${termId}`);
+          if (el && el.textContent !== name) el.textContent = name;
+        }
+      }
+    }
+  }
+
+  function renderSessions() {
+    // Don't rebuild the grid while a name is being edited — it would destroy the
+    // input element and steal focus on every 5s refresh.
+    if (editingSessionId !== null) return;
+    const showArchived = document.getElementById('show-archived').checked;
+    let visible = sessions.filter(s => showArchived || !s.archived);
+    if (activeState !== null) visible = visible.filter(s => s.state === activeState);
+    if (activeSource !== null) visible = visible.filter(s => s.source === activeSource);
+    if (activeGroup !== null) visible = visible.filter(s => s.group === activeGroup);
+
+    sessionMap.clear();
+    for (const s of sessions) sessionMap.set(s.id, s);
+
+    const total = sessions.filter(s => showArchived || !s.archived).length;
+    document.getElementById('hdr-count').textContent =
+      (activeState || activeSource || activeGroup) ? `${visible.length} / ${total}` : `${total}`;
+
+    // Waiting sessions: either background agent in waiting state, or any session
+    // whose open terminal is currently showing an interactive prompt (tool approval,
+    // plan mode, etc.) detected via PTY output scanning.
+    const waitingSessions = visible.filter(s => s.state === 'waiting' || termWaitingSessionIds.has(s.id));
+    const waitingIds = new Set(waitingSessions.map(s => s.id));
+
+    // Split remaining into open-terminal sessions (pinned top) and the rest.
+    // Order the open list to match the (drag-reorderable) terminal grid.
+    const openSessions = visible
+      .filter(s => openSessionIds.has(s.id) && !waitingIds.has(s.id))
+      .sort((a, b) => orderIndexForSession(a) - orderIndexForSession(b));
+    const restSessions = visible.filter(s => !openSessionIds.has(s.id) && !waitingIds.has(s.id));
+
+    const needsInputSection = document.getElementById('needs-input-section');
+    if (waitingSessions.length) {
+      document.getElementById('needs-input-header').textContent =
+        `⏸ Needs Input (${waitingSessions.length})`;
+      document.getElementById('needs-input-grid').innerHTML = waitingSessions.map(renderCard).join('');
+      needsInputSection.style.display = '';
+    } else {
+      needsInputSection.style.display = 'none';
+    }
+
+    const openSection = document.getElementById('open-sessions-section');
+    if (openSessions.length) {
+      document.getElementById('open-sessions-header').textContent =
+        `⚡ Open Terminals (${openSessions.length})`;
+      document.getElementById('open-sessions-grid').innerHTML = openSessions.map(renderCard).join('');
+      openSection.style.display = '';
+    } else {
+      openSection.style.display = 'none';
+    }
+
+    const grid = document.getElementById('sessions-grid');
+    if (!restSessions.length) {
+      grid.innerHTML = visible.length ? '' : `<div class="state-msg">No sessions found</div>`;
+    } else {
+      grid.innerHTML = restSessions.map(renderCard).join('');
+    }
+
+    renderGroupBar();
+  }
+
+  function renderCard(s) {
+    const dname = displayName(s);
+    const isOpen = openSessionIds.has(s.id);
+    const badgeState = `<span class="badge badge-${s.state}"><span class="bdot"></span>${s.state}</span>`;
+    const badgeSrc = (s.source === 'job' || s.bg)
+      ? `<span class="badge badge-job" title="Background agent — must be attached or forked, not resumed directly">agent</span>`
+      : '';
+    const badgeModel = s.model ? `<span class="badge badge-model">${esc(shortModel(s.model))}</span>` : '';
+    const badgeEffort = s.effort ? `<span class="badge badge-effort">${esc(s.effort)}</span>` : '';
+    const badgeOpen = isOpen ? `<span class="badge badge-open">⚡ open</span>` : '';
+    const badgeTeam = teamBadge(s.team);
+    const badgeGroup = s.group
+      ? `<span class="badge badge-group" onclick="showGroupModal('${s.id}')" title="Group: ${esc(s.group)}">${esc(s.group)} ✎</span>`
+      : '';
+    const teamLine = (s.team && s.team.role === 'lead' && s.team.members && s.team.members.length)
+      ? `<div class="card-team" title="Agent team members">👥 ${s.team.members.map(m => esc(m.name || m.agentType || 'agent')).join(', ')}</div>`
+      : '';
+    const archLbl = s.archived ? 'Unarchive' : 'Archive';
+    const cardCls = ['session-card', s.archived ? 'archived' : '', isOpen ? 'open' : ''].filter(Boolean).join(' ');
+
+    return `
+      <div class="${cardCls}" id="card-${s.id}">
+        <div class="card-badges">${badgeState}${badgeSrc}${badgeModel}${badgeEffort}${badgeOpen}${badgeTeam}${badgeGroup}</div>
+        <div class="card-name" id="cname-${s.id}" onclick="startRename('${s.id}')" title="Click to rename">${esc(dname)}</div>
+        <div class="card-cwd" title="${esc(s.cwd)}">${esc(s.cwdShort || s.cwd)}</div>
+        ${teamLine}
+        <div class="card-time">${timeAgo(s.lastActivity)}</div>
+        <div class="card-actions">
+          <button class="btn btn-sm${isOpen ? ' btn-primary' : ''}" onclick="openTerminalFor('${s.id}')">
+            ${isOpen ? '↗ Focus' : 'Open'}
+          </button>
+          <button class="btn btn-sm btn-ghost" onclick="showGroupModal('${s.id}')">${s.group ? '⊕ Group' : '+ Group'}</button>
+          <button class="btn btn-sm" onclick="archiveSession('${s.id}')">${archLbl}</button>
+          <button class="btn btn-sm btn-danger" onclick="confirmDelete('${s.id}')">Delete</button>
+        </div>
+      </div>`;
+  }
+
+  // ── Filter bar (state + source + groups) ─────────────────────────────────
+
+  // ── Agent action (attach vs fork) ─────────────────────────────────────────
+
+  async function agentAction(action) {
+    closeModal('modal-agent');
+    const s = pendingAgentOpen;
+    pendingAgentOpen = null;
+    if (!s) return;
+
+    const sessionName = displayName(s);
+    let body, label;
+
+    if (action === 'attach') {
+      // Opens the `claude agents` TUI. We assume the user attaches to THIS session,
+      // so we title the pane after it and let it track renames (fixedTitle: false).
+      body = { agentsView: true, cwd: s.cwd || defaultCwd };
+      label = sessionName;
+    } else {
+      body = {
+        sessionId: s.id, sessionName, fork: true,
+        cwd: s.cwd || defaultCwd,
+        model: s.model || undefined,
+        effort: s.effort || undefined,
+      };
+      label = `${sessionName} (fork)`;
+    }
+
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const { termId, cwd: actualCwd, error } = await res.json();
+      if (error) { alert('Failed: ' + error); return; }
+      createTerminalPane(termId, {
+        name: label,
+        state: action === 'fork' ? s.state : null,
+        model: action === 'fork' ? s.model : null,
+        effort: action === 'fork' ? s.effort : null,
+        // Mark the originating session as open in the grid. Fork keeps the "(fork)"
+        // label fixed; attach tracks the session name so it stays in sync on rename.
+        sessionId: s.id, cwd: actualCwd, fixedTitle: action === 'fork',
+      });
+    } catch (err) { alert('Error: ' + err.message); }
+  }
+
+  // Register service worker for PWA install
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  const STATE_ORDER = ['running', 'waiting', 'failed', 'done', 'idle'];
+  const STATE_ICONS = { running: '●', waiting: '⏸', failed: '✕', done: '✓', idle: '○' };
+
+  function renderGroupBar() {
+    const showArchived = document.getElementById('show-archived').checked;
+    const vis = sessions.filter(s => showArchived || !s.archived);
+    const groups = [...new Set(vis.map(s => s.group).filter(Boolean))].sort();
+    const bar = document.getElementById('group-bar');
+    const pills = [];
+
+    // State pills
+    for (const state of STATE_ORDER) {
+      const cnt = vis.filter(s => s.state === state).length;
+      if (!cnt) continue;
+      // Use safeAttr — state names are simple but be consistent
+      pills.push(`<span class="group-pill${activeState === state ? ' active' : ''}" onclick="setActiveState('${safeAttr(state)}')">${STATE_ICONS[state]} ${state} <span style="opacity:.65">(${cnt})</span></span>`);
+    }
+
+    // Source filter
+    const agentCnt = vis.filter(s => s.source === 'job').length;
+    const interactCnt = vis.filter(s => s.source === 'history').length;
+    if (agentCnt && interactCnt) {
+      pills.push('<div class="group-divider"></div>');
+      pills.push(`<span class="group-pill${activeSource === 'job' ? ' active' : ''}" onclick="setActiveSource('job')" title="Background agents only">Agents <span style="opacity:.65">(${agentCnt})</span></span>`);
+      pills.push(`<span class="group-pill${activeSource === 'history' ? ' active' : ''}" onclick="setActiveSource('history')" title="Interactive sessions only">Interactive <span style="opacity:.65">(${interactCnt})</span></span>`);
+    }
+
+    // Custom group pills
+    if (groups.length) {
+      pills.push('<div class="group-divider"></div>');
+      for (const g of groups) {
+        const cnt = vis.filter(s => s.group === g).length;
+        pills.push(`<span class="group-pill${activeGroup === g ? ' active' : ''}" onclick="setActiveGroup('${safeAttr(g)}')">${esc(g)} <span style="opacity:.65">(${cnt})</span></span>`);
+      }
+    }
+
+    // Clear button
+    if (activeState !== null || activeGroup !== null || activeSource !== null) {
+      pills.push(`<span class="group-pill" onclick="clearFilters()" style="margin-left:auto">✕ Clear</span>`);
+    }
+
+    bar.innerHTML = pills.join('');
+  }
+
+  function setActiveState(s) {
+    activeState = activeState === s ? null : s;
+    renderSessions();
+  }
+
+  function setActiveSource(s) {
+    activeSource = activeSource === s ? null : s;
+    renderSessions();
+  }
+
+  function setActiveGroup(g) {
+    activeGroup = activeGroup === g ? null : g;
+    renderSessions();
+  }
+
+  function clearFilters() {
+    activeState = null;
+    activeGroup = null;
+    activeSource = null;
+    renderSessions();
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+
+  async function openTerminalFor(id) {
+    const s = sessionMap.get(id);
+    if (!s) return;
+
+    // If already open, scroll to and focus the existing pane
+    if (openSessionIds.has(id)) {
+      for (const [termId, t] of openTerminals) {
+        if (t.sessionId === id) {
+          document.getElementById(`pane-${termId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          try { t.xterm.focus(); } catch {}
+          return;
+        }
+      }
+    }
+
+    // Only prompt (attach vs fork) for agents whose process is ALIVE right now —
+    // those genuinely can't be plain --resume'd. Everything else (finished agents,
+    // ordinary sessions) just opens. Any live straggler we missed is caught by
+    // maybeHandleBgAgentError when the resume errors.
+    if (s.bgLive) {
+      pendingAgentOpen = s;
+      document.getElementById('agent-modal-msg').textContent =
+        `"${displayName(s)}" is currently running as a background agent.`;
+      // Show/hide the Attach button based on running state
+      // Always show Attach — cached state can be stale, and claude agents
+      // is harmless even for a done session (shows empty list).
+      const attachBtn = document.getElementById('agent-attach-btn');
+      if (attachBtn) attachBtn.style.display = '';
+      openModal('modal-agent');
+      return;
+    }
+
+    const sessionName = displayName(s);
+    const body = {
+      sessionId: s.id,
+      sessionName,
+      cwd: s.cwd || defaultCwd,
+      model: s.model || undefined,
+      effort: s.effort || undefined,
+    };
+
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const { termId, error } = await res.json();
+      if (error) { alert('Failed to open terminal: ' + error); return; }
+      createTerminalPane(termId, {
+        name: sessionName, state: s.state, model: s.model,
+        effort: s.effort, sessionId: s.id, cwd: s.cwd,
+      });
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  }
+
+  async function archiveSession(id) {
+    const s = sessionMap.get(id);
+    const termIdsToClose = [];
+    for (const [termId, t] of openTerminals) {
+      // Match by session ID (known sessions) or by cwd (pending-link new sessions)
+      if (t.sessionId === id || (s && t.pendingCwd === s.cwd)) {
+        termIdsToClose.push(termId);
+      }
+    }
+    termIdsToClose.forEach(closeTerminal);
+    await fetch(`/api/sessions/${id}/archive`, { method: 'POST' });
+    loadSessions();
+  }
+
+  function confirmDelete(id) {
+    const s = sessionMap.get(id);
+    const name = s ? displayName(s) : id;
+    if (!confirm(`Permanently delete "${name}" and all its history?`)) return;
+    deleteSession(id);
+  }
+
+  async function deleteSession(id) {
+    await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
+    loadSessions();
+  }
+
+  // ── Rename inline ──────────────────────────────────────────────────────────
+
+  function startRename(id) {
+    const s = sessionMap.get(id);
+    if (!s) return;
+    const nameEl = document.getElementById(`cname-${id}`);
+    if (!nameEl || nameEl.tagName === 'INPUT') return;
+    const currentDisplay = displayName(s);
+
+    editingSessionId = id; // pause grid re-renders so the 5s refresh can't kill the input
+
+    const input = document.createElement('input');
+    input.className = 'rename-input';
+    input.value = currentDisplay;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+
+    async function save() {
+      if (done) return;
+      done = true;
+      editingSessionId = null;
+      const newName = input.value.trim();
+      const effectiveName = newName || s.name;
+      if (newName && newName !== s.name) {
+        await fetch(`/api/sessions/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customName: newName }),
+        });
+      } else if (!newName && s.customName) {
+        await fetch(`/api/sessions/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ customName: null }),
+        });
+      }
+      // Update the live titlebar of any open terminal for this session in place.
+      // We intentionally do NOT close/reopen the terminal: that restarted the PTY
+      // (losing running work) and outright closed agent-view terminals. The tradeoff
+      // is that Claude Code's own in-terminal status bar keeps its original name
+      // until the session is next opened fresh — worth it to never disrupt a session.
+      for (const [termId, t] of openTerminals) {
+        if (t.sessionId === id && !t.fixedTitle) {
+          t.name = effectiveName;
+          const el = document.getElementById(`tname-${termId}`);
+          if (el) el.textContent = effectiveName;
+        }
+      }
+      persistTerminals();
+      loadSessions();
+    }
+
+    function cancel() {
+      if (done) return;
+      done = true;
+      editingSessionId = null;
+      const div = document.createElement('div');
+      div.className = 'card-name';
+      div.id = `cname-${id}`;
+      div.textContent = currentDisplay;
+      div.title = 'Click to rename';
+      div.onclick = () => startRename(id);
+      input.replaceWith(div);
+    }
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+  }
+
+  // ── Group modal ────────────────────────────────────────────────────────────
+
+  let groupEditId = null;
+
+  function showGroupModal(id) {
+    groupEditId = id;
+    const s = sessionMap.get(id);
+    const input = document.getElementById('group-input');
+    input.value = s?.group || '';
+
+    const allGroups = [...new Set(sessions.map(s => s.group).filter(Boolean))].sort();
+    document.getElementById('group-datalist').innerHTML =
+      allGroups.map(g => `<option value="${esc(g)}">`).join('');
+
+    openModal('modal-group');
+    setTimeout(() => input.focus(), 60);
+  }
+
+  async function saveGroup(clear) {
+    if (!groupEditId) return;
+    const group = clear ? null : (document.getElementById('group-input').value.trim() || null);
+    await fetch(`/api/sessions/${groupEditId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group }),
+    });
+    closeModal('modal-group');
+    groupEditId = null;
+    loadSessions();
+  }
+
+  // ── New session modal ──────────────────────────────────────────────────────
+
+  function openNewModal() {
+    document.getElementById('new-cwd').value = '';
+    document.getElementById('new-cwd').placeholder = defaultCwd;
+    openModal('modal-new');
+  }
+
+  async function launchNewSession() {
+    const model = document.getElementById('new-model').value;
+    const effort = document.getElementById('new-effort').value;
+    const cwd = document.getElementById('new-cwd').value.trim() || defaultCwd;
+    closeModal('modal-new');
+
+    const label = `${shortModel(model)} / ${effort}`;
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, effort, cwd }),
+      });
+      const { termId, cwd: actualCwd, sessionId: newId, error } = await res.json();
+      if (error) { alert('Failed to launch: ' + error); return; }
+      // The server pre-assigned the session id, so we can persist the chosen
+      // model + effort right now (keyed by id) and track the terminal directly —
+      // no cwd guessing, so the new terminal can't get mis-linked to another session.
+      if (newId) {
+        fetch(`/api/sessions/${newId}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, effort, group: activeGroup || undefined }),
+        }).catch(() => {});
+      }
+      createTerminalPane(termId, { name: label, model, effort, state: null, sessionId: newId || null, cwd: actualCwd });
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  }
+
+  // ── Settings modal ─────────────────────────────────────────────────────────
+
+  async function saveSettings() {
+    const cwd = document.getElementById('settings-cwd').value.trim() || homeDir;
+    await fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultCwd: cwd }),
+    });
+    defaultCwd = cwd;
+    document.getElementById('new-cwd').placeholder = cwd;
+    closeModal('modal-settings');
+  }
+
+  // Open settings: pre-fill current value
+  document.getElementById('modal-settings').addEventListener('click', e => {
+    if (e.target.id === 'modal-settings') closeModal('modal-settings');
+  });
+
+  document.getElementById('modal-settings').querySelector('.modal').addEventListener('click', e => {
+    // prefill on open
+  });
+
+  function openSettingsModal() {
+    document.getElementById('settings-cwd').value = defaultCwd;
+    openModal('modal-settings');
+  }
+
+  // Override the settings button to use pre-fill version
+  document.querySelector('[onclick="openModal(\'modal-settings\')"]')
+    .setAttribute('onclick', 'openSettingsModal()');
+
+  // ── Terminal panes ─────────────────────────────────────────────────────────
+
+  function createTerminalPane(termId, info) {
+    const { name, state, model, effort, sessionId } = info;
+
+    // Track open session
+    if (sessionId) {
+      openSessionIds.add(sessionId);
+      renderSessions(); // refresh cards to show highlight
+    }
+
+    const stateChip = state ? `<span class="badge badge-${state}"><span class="bdot"></span>${state}</span>` : '';
+    const modelChip = model ? `<span class="badge badge-model">${esc(shortModel(model))}</span>` : '';
+    const effortChip = effort ? `<span class="badge badge-effort">${esc(effort)}</span>` : '';
+
+    const pane = document.createElement('div');
+    pane.className = 'terminal-pane';
+    pane.id = `pane-${termId}`;
+    pane.dataset.sessionId = sessionId || '';
+    pane.innerHTML = `
+      <div class="terminal-titlebar">
+        <span class="terminal-titlebar-name" id="tname-${termId}">${esc(name)}</span>
+        <div class="terminal-titlebar-chips">${stateChip}${modelChip}${effortChip}</div>
+        <button class="terminal-close" onclick="closeTerminal('${termId}')" title="Close">×</button>
+      </div>
+      <div class="terminal-body" id="tbody-${termId}"></div>`;
+
+    document.getElementById('terminals-grid').appendChild(pane);
+    updateLayout();
+
+    const xterm = new Terminal({
+      theme: {
+        background: '#ffffff',
+        foreground: '#1f2328',
+        cursor: '#0969da',
+        cursorAccent: '#ffffff',
+        selectionBackground: 'rgba(9,105,218,0.15)',
+        black: '#24292f',    brightBlack: '#6e7781',
+        red: '#cf222e',      brightRed: '#a40e26',
+        green: '#116329',    brightGreen: '#1a7f37',
+        yellow: '#4d2d00',   brightYellow: '#633c01',
+        blue: '#0969da',     brightBlue: '#218bff',
+        magenta: '#8250df',  brightMagenta: '#a475f9',
+        cyan: '#1b7c83',     brightCyan: '#3192aa',
+        white: '#6e7781',    brightWhite: '#8c959f',
+      },
+      fontFamily: "'SF Mono', 'Fira Code', ui-monospace, monospace",
+      fontSize: 12,
+      lineHeight: 1.25,
+      cursorBlink: true,
+      scrollback: 5000,
+      allowProposedApi: true,
+    });
+
+    // OSC 8 hyperlinks (file:// + custom schemes some tools emit) → our opener,
+    // not xterm's default window.open which can't reach the file router. Set
+    // defensively so an unsupported option can never break terminal creation.
+    try { xterm.options.linkHandler = { activate: (_e, uri) => openExternalLink(uri, info.cwd) }; } catch {}
+
+    const fitAddon = new FitAddon.FitAddon();
+    xterm.loadAddon(fitAddon);
+
+    xterm.open(document.getElementById(`tbody-${termId}`));
+    setTimeout(() => { try { fitAddon.fit(); } catch {} }, 20);
+    // Link click-to-open is handled by ONE global document-level capture listener
+    // (see below) so it fires before xterm's own mouse handlers in any terminal.
+
+    const entry = {
+      xterm, fitAddon, ws: null, ro: null,
+      sessionId: info.sessionId, fixedTitle: !!info.fixedTitle,
+      name: info.name || '', model: info.model || null, effort: info.effort || null, cwd: info.cwd || null,
+      closing: false, reconnectDelay: 500, reconnectTimer: null,
+    };
+    if (!info.sessionId && info.cwd) {
+      // New session without a pre-assigned id (legacy/fallback): match by cwd+time.
+      entry.pendingCwd = info.cwd;
+      entry.startedAt = Date.now();
+      entry.launchModel = info.model || null;
+      entry.launchEffort = info.effort || null;
+    }
+
+    // Input/resize use whatever socket is current, so they survive reconnects.
+    xterm.onData(data => {
+      if (entry.ws && entry.ws.readyState === WebSocket.OPEN) entry.ws.send(JSON.stringify({ type: 'input', data }));
+    });
+    xterm.onResize(({ cols, rows }) => {
+      if (entry.ws && entry.ws.readyState === WebSocket.OPEN) entry.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+    });
+
+    const ro = new ResizeObserver(() => scheduleFit(entry));
+    ro.observe(document.getElementById(`tbody-${termId}`));
+    entry.ro = ro;
+
+    openTerminals.set(termId, entry);
+    if (!terminalOrder.includes(termId)) terminalOrder.push(termId);
+    setupPaneDnD(pane, termId);
+    connectTerminalWS(termId, entry, false);
+    rescheduleRefresh(); // called after set so openTerminals.size > 0 → 5s interval
+    persistTerminals();
+  }
+
+  // (Re)connect a terminal's WebSocket. The server keeps the PTY alive when clients
+  // drop, so after a screen-lock / sleep / network blip we just reconnect and the
+  // server replays its buffer. A 4004 means the PTY is gone (e.g. server restarted).
+  function connectTerminalWS(termId, entry, isReconnect) {
+    if (entry.closing) return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/ws?id=${encodeURIComponent(termId)}`);
+    entry.ws = ws;
+    // The server replays its whole buffer on connect; clear first on reconnect so
+    // we don't stack a duplicate copy on top of the existing screen.
+    if (isReconnect) { try { entry.xterm.reset(); } catch {} }
+    ws.onopen = () => {
+      entry.reconnectDelay = 500;
+      try { entry.fitAddon.fit(); ws.send(JSON.stringify({ type: 'resize', cols: entry.xterm.cols, rows: entry.xterm.rows })); } catch {}
+    };
+    ws.onmessage = e => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'data') {
+          entry.xterm.write(msg.data);
+          scheduleWaitingCheck(termId, entry);
+          maybeHandleBgAgentError(termId, msg.data);
+        }
+        if (msg.type === 'exit') entry.xterm.write('\r\n\x1b[2;33m[process exited]\x1b[0m\r\n');
+      } catch {}
+    };
+    ws.onclose = ev => {
+      if (entry.closing) return;
+      if (ev && ev.code === 4004) {
+        entry.xterm.write('\r\n\x1b[2;31m[session ended — server no longer has this terminal]\x1b[0m\r\n');
+        closeTerminal(termId, true);
+        return;
+      }
+      entry.reconnectDelay = Math.min((entry.reconnectDelay || 500) * 1.5, 5000);
+      entry.reconnectTimer = setTimeout(() => {
+        if (!entry.closing && openTerminals.has(termId)) connectTerminalWS(termId, entry, true);
+      }, entry.reconnectDelay);
+    };
+    ws.onerror = () => { try { ws.close(); } catch {} };
+  }
+
+  function closeTerminal(termId, serverGone) {
+    const t = openTerminals.get(termId);
+    if (t) {
+      t.closing = true;
+      if (t.reconnectTimer) clearTimeout(t.reconnectTimer);
+      try { t.ws && t.ws.close(); } catch {}
+      try { t.xterm.dispose(); } catch {}
+      try { t.ro && t.ro.disconnect(); } catch {}
+      if (t.sessionId) { openSessionIds.delete(t.sessionId); termWaitingSessionIds.delete(t.sessionId); }
+      if (t._waitRaf) cancelAnimationFrame(t._waitRaf);
+      renderSessions();
+      openTerminals.delete(termId);
+    }
+    terminalOrder = terminalOrder.filter(id => id !== termId);
+    // serverGone (4004): the PTY is already gone, nothing to kill.
+    if (!serverGone) fetch(`/api/terminal/${termId}`, { method: 'DELETE' }).catch(() => {});
+    document.getElementById(`pane-${termId}`)?.remove();
+    updateLayout();
+    rescheduleRefresh();
+    persistTerminals();
+  }
+
+  // Debounced fit (one per animation frame, so it lands AFTER a layout transition
+  // settles instead of on intermediate sizes) that also resyncs the PTY width.
+  // xterm.onResize only fires when the size CHANGES, so a fit that lands on the same
+  // cols won't notify the server — and the PTY (spawned wide at 220) then stays out
+  // of sync, making Claude render wider than the display. Sending the size after
+  // every fit keeps the PTY == xterm, which is what prevents the buffer/display
+  // width desync that broke wrapped-link detection.
+  function scheduleFit(entry) {
+    if (!entry || !entry.fitAddon) return;
+    if (entry._fitRaf) cancelAnimationFrame(entry._fitRaf);
+    entry._fitRaf = requestAnimationFrame(() => {
+      entry._fitRaf = null;
+      try {
+        entry.fitAddon.fit();
+        const ws = entry.ws;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: entry.xterm.cols, rows: entry.xterm.rows }));
+        }
+      } catch {}
+    });
+  }
+
+  function updateLayout() {
+    const grid = document.getElementById('terminals-grid');
+    const n = grid.children.length;
+    const main = document.getElementById('main');
+    const panel = document.getElementById('terminals-panel');
+    const sessPanel = document.getElementById('sessions-panel');
+
+    if (!n) {
+      panel.classList.add('hidden');
+      main.classList.remove('layout-split');
+      sessPanel.classList.remove('has-terminals');
+    } else {
+      panel.classList.remove('hidden');
+      main.classList.add('layout-split');
+      sessPanel.classList.remove('has-terminals'); // not needed in split mode
+      const C = n === 1 ? 1 : n <= 4 ? 2 : 3;
+      grid.style.gridTemplateColumns = Array(C).fill('1fr').join(' ');
+
+      // Fill trailing empty cells: when the last row is short (e.g. 3 terminals in
+      // a 2-col grid), make the terminal directly ABOVE each empty cell span 2 rows
+      // so it grows vertically into the gap instead of leaving dead space.
+      const panes = [...grid.children];
+      panes.forEach(p => { p.style.gridRow = ''; });
+      const R = Math.ceil(n / C);
+      const itemsInLastRow = n - (R - 1) * C;
+      if (R >= 2 && itemsInLastRow < C) {
+        for (let col = itemsInLastRow; col < C; col++) {
+          const above = panes[(R - 2) * C + col];
+          if (above) above.style.gridRow = 'span 2';
+        }
+      }
+      for (const [, t] of openTerminals) scheduleFit(t);
+    }
+  }
+
+  // ── Modals ─────────────────────────────────────────────────────────────────
+
+  function openModal(id) { document.getElementById(id).classList.add('open'); }
+  function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+  document.querySelectorAll('.modal-overlay').forEach(el =>
+    el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); })
+  );
+
+  // ── Utilities ──────────────────────────────────────────────────────────────
+
+  function openExternalLink(uri, cwd) {
+    if (!uri) return;
+    if (uri.startsWith('http://') || uri.startsWith('https://')) {
+      window.open(uri, '_blank', 'noopener,noreferrer');
+    } else {
+      fetch('/api/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: uri, cwd }),
+      }).catch(() => {});
+    }
+  }
+
+  // ── Background-agent resume error (bug 1 catch-all) ─────────────────────────
+  // If a resumed session turns out to be a live background agent, the CLI prints
+  // "… currently running as a background agent" and exits. Convert that into the
+  // attach/fork modal regardless of how the session was classified at open time.
+  function maybeHandleBgAgentError(termId, chunk) {
+    const t = openTerminals.get(termId);
+    if (!t || t.bgHandled) return;
+    t.recentText = ((t.recentText || '') + chunk).slice(-3000);
+    if (!/currently running as a background agent|--fork-session to branch off/i.test(t.recentText)) return;
+    t.bgHandled = true;
+    const m = t.recentText.match(/Session\s+([0-9a-f-]{36})/i);
+    const sid = (m && m[1]) || t.sessionId;
+    const s = sid ? sessionMap.get(sid) : null;
+    closeTerminal(termId);
+    if (s) {
+      pendingAgentOpen = s;
+      document.getElementById('agent-modal-msg').textContent =
+        `"${displayName(s)}" is currently running as a background agent. Attach to it or fork a copy.`;
+      const attachBtn = document.getElementById('agent-attach-btn');
+      if (attachBtn) attachBtn.style.display = '';
+      openModal('modal-agent');
+    } else {
+      alert('This session is running as a background agent.\nUse "claude agents" to attach, or fork a copy.');
+    }
+  }
+
+  // ── Team badge + open-list ordering ─────────────────────────────────────────
+  function teamBadge(team) {
+    if (!team) return '';
+    if (team.role === 'lead') {
+      const names = (team.members || []).map(m => m.name).filter(Boolean).join(', ');
+      return `<span class="badge badge-team" title="Agent team lead${names ? ' — ' + esc(names) : ''}">👥 team${team.size != null ? ' (' + team.size + ')' : ''}</span>`;
+    }
+    return `<span class="badge badge-team" title="Teammate${team.agentType ? ' — ' + esc(team.agentType) : ''}">👥 ${esc(team.memberName || 'teammate')}</span>`;
+  }
+
+  function orderIndexForSession(s) {
+    for (let i = 0; i < terminalOrder.length; i++) {
+      const t = openTerminals.get(terminalOrder[i]);
+      if (t && t.sessionId === s.id) return i;
+    }
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  // ── Drag-to-reorder terminals (bug 5) ───────────────────────────────────────
+  function setupPaneDnD(pane, termId) {
+    const bar = pane.querySelector('.terminal-titlebar');
+    if (!bar) return;
+    bar.setAttribute('draggable', 'true');
+    bar.addEventListener('dragstart', e => {
+      // Don't initiate a drag from the close button.
+      if (e.target.closest('.terminal-close')) { e.preventDefault(); return; }
+      draggingTermId = termId;
+      pane.classList.add('dragging');
+      try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', termId); } catch {}
+    });
+    bar.addEventListener('dragend', () => {
+      draggingTermId = null;
+      pane.classList.remove('dragging');
+      document.querySelectorAll('.terminal-pane.drag-over').forEach(el => el.classList.remove('drag-over'));
+    });
+    pane.addEventListener('dragover', e => {
+      if (!draggingTermId || draggingTermId === termId) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'move'; } catch {}
+      pane.classList.add('drag-over');
+    });
+    pane.addEventListener('dragleave', e => {
+      if (!pane.contains(e.relatedTarget)) pane.classList.remove('drag-over');
+    });
+    pane.addEventListener('drop', e => {
+      e.preventDefault();
+      pane.classList.remove('drag-over');
+      if (draggingTermId && draggingTermId !== termId) reorderTerminals(draggingTermId, termId);
+    });
+  }
+
+  function reorderTerminals(fromId, toId) {
+    const fromIdx = terminalOrder.indexOf(fromId);
+    const toIdx = terminalOrder.indexOf(toId);
+    if (fromIdx < 0 || toIdx < 0 || fromId === toId) return;
+    const insertAfter = fromIdx < toIdx; // dragging down → drop after target, up → before
+    terminalOrder.splice(fromIdx, 1);
+    const newToIdx = terminalOrder.indexOf(toId);
+    terminalOrder.splice(newToIdx + (insertAfter ? 1 : 0), 0, fromId);
+    applyTerminalOrder();
+    renderSessions(); // resort the Open Terminals list to match
+  }
+
+  function applyTerminalOrder() {
+    const grid = document.getElementById('terminals-grid');
+    for (const id of terminalOrder) {
+      const pane = document.getElementById(`pane-${id}`);
+      if (pane) grid.appendChild(pane); // appendChild moves node to end → final order
+    }
+    for (const [, t] of openTerminals) scheduleFit(t);
+    persistTerminals();
+  }
+
+  // ── Click-to-open links (capture phase, pixel→cell) ─────────────────────────
+  // URLs are opened synchronously (preserves the user gesture for window.open).
+  // File/dir paths are resolved by the SERVER against the real filesystem, which
+  // is the only reliable way to handle paths containing spaces and parentheses
+  // (a pure regex can't know where such a path ends — this is why VS Code works).
+
+  // Build the full logical line for a click: rejoin rows so a path or URL split
+  // across visual rows is reconstructed whole. Returns { joined, colOffset }.
+  // Two kinds of wrap: xterm soft-wrap (isWrapped) AND Claude's own hard-wrap
+  // (it inserts newlines, so the continuation is NOT isWrapped — but a wrapped
+  // long path/URL fills the row to the right edge, which `rowFull` detects).
+  function logicalLineAt(buf, absRow, col, cols) {
+    // "Full" = trimmed content reaches the DISPLAY width. We compare to `cols`, not
+    // the raw string length, because a buffer line can be physically wider than the
+    // display (stale width after a resize) and padded with spaces — checking the
+    // last cell would see padding and wrongly decide the row isn't a wrap source.
+    const content = ln => ln ? ln.translateToString(true) : '';
+    const rowFull = ln => content(ln).length >= cols - 1;
+    // Logical start: walk up while this row is a soft-wrap, or the row above is full.
+    let startRow = absRow, up = 0;
+    while (startRow > 0 && up < 6) {
+      const here = buf.getLine(startRow);
+      if ((here && here.isWrapped) || rowFull(buf.getLine(startRow - 1))) { startRow--; up++; }
+      else break;
+    }
+    // Collect downward while the next row continues (soft-wrap) or this row is full.
+    // Continuation rows carry alignment INDENTATION (Claude wraps mid-token then
+    // indents the next row); strip it or it injects spaces into the rejoined token.
+    let joined = '', colOffset = 0, r = startRow, down = 0;
+    while (down < 12) {
+      const ln = buf.getLine(r);
+      if (!ln) break;
+      let s = content(ln), lead = 0;
+      if (r > startRow) { const t = s.replace(/^[ \t]+/, ''); lead = s.length - t.length; s = t; }
+      if (r < absRow) colOffset += s.length;                                   // rows above the click
+      else if (r === absRow) colOffset += Math.max(0, Math.min(col, s.length + lead) - lead); // clicked row
+      joined += s;
+      const next = buf.getLine(r + 1);
+      if (next && (next.isWrapped || rowFull(ln))) { r++; down++; } else break;
+    }
+    return { joined, colOffset, startRow };
+  }
+
+  // ONE global capture-phase mousedown listener. Capturing on `document` runs
+  // before xterm's own mouse handlers in EVERY terminal, so it can't be preempted.
+  document.addEventListener('mousedown', async e => {
+    if (e.button !== 0) return;
+    const body = e.target && e.target.closest && e.target.closest('.terminal-body');
+    if (!body) return;
+    const termId = body.id.replace('tbody-', '');
+    const entry = openTerminals.get(termId);
+    if (!entry || !entry.xterm) return;
+    try {
+      const xterm = entry.xterm;
+      const screen = (xterm.element && xterm.element.querySelector('.xterm-screen')) || body;
+      const rect = screen.getBoundingClientRect();
+      const cols = xterm.cols, rows = xterm.rows;
+      if (!cols || !rows || rect.width === 0 || rect.height === 0) return;
+      const col = Math.floor((e.clientX - rect.left) / (rect.width / cols));
+      const vrow = Math.floor((e.clientY - rect.top) / (rect.height / rows));
+      const buf = xterm.buffer.active;
+      const absRow = buf.viewportY + vrow;
+      if (!buf.getLine(absRow)) return;
+
+      // Rejoin wrapped rows and work entirely on the logical line.
+      const { joined, colOffset } = logicalLineAt(buf, absRow, col, cols);
+      const ch = joined[colOffset];
+      if (ch === undefined || ch === ' ') return; // pressed on whitespace
+
+      // 1) URL spanning the click (on the rejoined line) → open now.
+      const urlRe = /https?:\/\/[^\s"'<>`)\]]+/g;
+      let u;
+      while ((u = urlRe.exec(joined)) !== null) {
+        if (colOffset >= u.index && colOffset < u.index + u[0].length) {
+          const url = u[0].replace(/[.,;:!?)\]}>'"]+$/, '');
+          e.preventDefault(); e.stopPropagation();
+          window.open(url, '_blank', 'noopener,noreferrer');
+          return;
+        }
+      }
+
+      // 2) File/dir path → let the server resolve against the filesystem.
+      if (!/\//.test(joined) && !/\.\w/.test(joined)) return; // not path-ish
+      e.preventDefault(); e.stopPropagation();
+      fetch('/api/open', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ line: joined, col: colOffset, cwd: entry.cwd }),
+      }).catch(() => {});
+    } catch {}
+  }, true);
+
+  // ── Persist + restore open terminals across reloads ─────────────────────────
+  const LS_TERMINALS = 'claude-agents-open-terminals';
+  function persistTerminals() {
+    try {
+      const list = terminalOrder.map(termId => {
+        const t = openTerminals.get(termId);
+        if (!t || t.closing) return null;
+        return {
+          termId, sessionId: t.sessionId || null, name: t.name || '',
+          model: t.model || null, effort: t.effort || null, cwd: t.cwd || null,
+          fixedTitle: !!t.fixedTitle,
+        };
+      }).filter(Boolean);
+      localStorage.setItem(LS_TERMINALS, JSON.stringify(list));
+    } catch {}
+  }
+
+  function restoreTerminals() {
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(LS_TERMINALS) || '[]'); } catch { saved = []; }
+    if (!Array.isArray(saved)) return;
+    for (const s of saved) {
+      if (!s || !s.termId || openTerminals.has(s.termId)) continue;
+      // Rebuilds the pane and reconnects to the existing PTY. If the server no
+      // longer has it (restarted), connectTerminalWS gets a 4004 and cleans up.
+      createTerminalPane(s.termId, {
+        name: s.name, model: s.model, effort: s.effort, cwd: s.cwd,
+        sessionId: s.sessionId, fixedTitle: s.fixedTitle, state: null,
+      });
+    }
+  }
+
+  // Returning from a locked screen / sleep often leaves sockets closed without a
+  // clean event — poke any non-open terminal back to life when we regain focus.
+  function reconnectStaleTerminals() {
+    for (const [termId, entry] of openTerminals) {
+      if (entry.closing) continue;
+      const rs = entry.ws ? entry.ws.readyState : WebSocket.CLOSED;
+      if (rs === WebSocket.CLOSED || rs === WebSocket.CLOSING) {
+        if (entry.reconnectTimer) { clearTimeout(entry.reconnectTimer); entry.reconnectTimer = null; }
+        connectTerminalWS(termId, entry, true);
+      }
+    }
+  }
+  window.addEventListener('focus', reconnectStaleTerminals);
+  window.addEventListener('online', reconnectStaleTerminals);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) reconnectStaleTerminals(); });
+  // Window resize → refit every terminal (keeps xterm + PTY widths in sync).
+  window.addEventListener('resize', () => { for (const [, t] of openTerminals) scheduleFit(t); });
+
+  function esc(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function shortModel(m) {
+    if (!m) return '';
+    return m
+      .replace('claude-', '')
+      .replace('-20251001', '')
+      .replace(/\[1m\]/i, ' 1M')
+      .replace(/-4-8\b/, ' 4.8')
+      .replace(/-4-6\b/, ' 4.6')
+      .replace(/-4-5\b/, ' 4.5');
+  }
+
+  function timeAgo(d) {
+    if (!d) return '';
+    const ms = Date.now() - new Date(d).getTime();
+    if (isNaN(ms) || ms < 0) return '';
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    const dy = Math.floor(h / 24);
+    return dy < 30 ? `${dy}d ago` : `${Math.floor(dy / 30)}mo ago`;
+  }
+</script>
+</body>
+</html>
