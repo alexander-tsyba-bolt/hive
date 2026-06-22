@@ -563,13 +563,12 @@
   let terminalOrder = [];           // termIds in grid display order (drag-reorderable)
   let draggingTermId = null;        // termId currently being dragged
   let prevSessionStates = new Map(); // sessionId -> state, for detecting waiting transitions
+  let prevJmNames = new Map();       // sessionId -> last known jmName, for detecting Claude /rename
   let termWaitingSessionIds = new Set(); // session IDs whose open terminal is showing an interactive prompt
 
-  // jmName (JSONL explicit title) wins over Hive customName. ai-title is excluded from
-  // the tail scan so auto-generated titles never override explicit /rename or Hive renames.
-  // Both directions work: Hive rename appends custom-title → jmName updates; Claude /rename
-  // also appends custom-title → jmName updates and overrides any stale customName.
-  function displayName(s) { return s.jmName || s.customName || s.name; }
+  // Hive explicit rename (customName) wins over JSONL-derived name (jmName).
+  // jmName is used when no Hive rename exists, so Claude /rename still shows.
+  function displayName(s) { return s.customName || s.jmName || s.name; }
 
   // Safe string for use inside onclick="fn('...')" attributes
   function safeAttr(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
@@ -656,12 +655,26 @@
       const res = await fetch('/api/sessions');
       const newSessions = await res.json();
       // Detect sessions that just entered waiting state and notify.
+      // Also detect Claude Code /rename (jmName changed) and sync customName.
       for (const s of newSessions) {
         const prev = prevSessionStates.get(s.id);
         if (s.state === 'waiting' && prev !== undefined && prev !== 'waiting') {
           fireWaitingNotification(s);
         }
         prevSessionStates.set(s.id, s.state);
+
+        const prevJm = prevJmNames.get(s.id);
+        const curJm = s.jmName || null;
+        if (curJm && prevJm !== undefined && curJm !== prevJm) {
+          // Claude /rename changed jmName — sync it into customName so Hive shows the new name
+          fetch(`/api/sessions/${s.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ customName: curJm }),
+          }).catch(() => {});
+          s.customName = curJm; // optimistic: avoid flicker this render cycle
+        }
+        prevJmNames.set(s.id, curJm);
       }
       sessions = newSessions;
       linkAndUpdateTerminalTitles(); // discover new sessions + sync titles
