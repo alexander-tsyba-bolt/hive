@@ -363,11 +363,12 @@ app.get('/api/sessions', (req, res) => {
           id = path.basename(linkScanPath, '.jsonl') || sessionId;
         }
 
+        const sm = meta[id] || {};
+        if (sm.deleted) continue;
         const jm = parseSessionMetaCached(linkScanPath);
         const live = registry.get(id) || registry.get(sessionId);
         const modelFromFlags = normalizeModel(extractFlag(respawnFlags, '--model'));
         const fullCwd = cwd || jm.cwd || HOME;
-        const sm = meta[id] || {};
         reappendCustomTitleIfStale(linkScanPath, jm, sm);
 
         sessions.set(id, {
@@ -404,12 +405,13 @@ app.get('/api/sessions', (req, res) => {
           if (!file.endsWith('.jsonl')) continue;
           const sid = file.replace('.jsonl', '');
           if (sessions.has(sid)) continue;
+          const sm = meta[sid] || {};
+          if (sm.deleted) continue;
           const jsonlPath = path.join(projPath, file);
           const stat = fs.statSync(jsonlPath);
           const jm = parseSessionMetaCached(jsonlPath);
           const live = registry.get(sid);
           const fullCwd = jm.cwd || HOME;
-          const sm = meta[sid] || {};
           reappendCustomTitleIfStale(jsonlPath, jm, sm);
 
           sessions.set(sid, {
@@ -505,7 +507,9 @@ app.post('/api/sessions/:id/archive', (req, res) => {
 app.delete('/api/sessions/:id', (req, res) => {
   const { id } = req.params;
   const meta = loadMeta();
-  delete meta[id];
+  // Tombstone: prevents the session card from reappearing even if the JSONL is
+  // recreated by a still-running Claude process (e.g. in an external terminal).
+  meta[id] = { ...meta[id], deleted: true };
   saveMeta(meta);
 
   let removed = false;
@@ -521,7 +525,10 @@ app.delete('/api/sessions/:id', (req, res) => {
         const sf = path.join(JOBS_DIR, jobId, 'state.json');
         if (!fs.existsSync(sf)) continue;
         const s = JSON.parse(fs.readFileSync(sf, 'utf8'));
-        if (s.sessionId === id) {
+        const linkId = s.linkScanPath && s.linkScanPath.endsWith('.jsonl')
+          ? path.basename(s.linkScanPath, '.jsonl')
+          : null;
+        if (s.sessionId === id || linkId === id) {
           fs.rmSync(path.join(JOBS_DIR, jobId), { recursive: true });
           removed = true;
         }
