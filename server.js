@@ -96,7 +96,7 @@ function normalizeModel(m) {
   // Filter out synthetic/internal model identifiers
   if (m === '<synthetic>' || m.startsWith('<') || m === 'synthetic') return null;
   m = m.replace(/\[1m\]?$/i, '');
-  if (m === 'sonnet') return 'claude-sonnet-4-6';
+  if (m === 'sonnet') return 'claude-sonnet-5';
   if (m === 'opus') return 'claude-opus-4-8';
   if (m === 'haiku') return 'claude-haiku-4-5';
   return m;
