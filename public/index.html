@@ -190,12 +190,13 @@
       display: flex;
       flex-direction: column;
       gap: 6px;
+      position: relative;
     }
 
     .session-card:hover { border-color: var(--border2); }
     .session-card.archived { opacity: 0.5; }
 
-    .card-badges { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+    .card-badges { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; padding-right: 22px; }
 
     .badge {
       display: inline-flex;
@@ -270,8 +271,9 @@
     .card-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 3px; }
 
     .card-close {
-      margin-left: auto;
-      flex-shrink: 0;
+      position: absolute;
+      top: 8px;
+      right: 8px;
       background: none;
       border: none;
       color: var(--text-faint);
@@ -818,7 +820,8 @@
 
     return `
       <div class="${cardCls}" id="card-${s.id}">
-        <div class="card-badges">${badgeState}${badgeSrc}${badgeModel}${badgeEffort}${badgeOpen}${badgeTeam}${badgeGroup}${closeBtn}</div>
+        ${closeBtn}
+        <div class="card-badges">${badgeState}${badgeSrc}${badgeModel}${badgeEffort}${badgeOpen}${badgeTeam}${badgeGroup}</div>
         <div class="card-name" id="cname-${s.id}" onclick="startRename('${s.id}')" title="Click to rename">${esc(dname)}</div>
         <div class="card-cwd" title="${esc(s.cwd)}">${esc(s.cwdShort || s.cwd)}</div>
         ${teamLine}
