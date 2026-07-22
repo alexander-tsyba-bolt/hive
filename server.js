@@ -431,9 +431,12 @@ app.get('/api/sessions', (req, res) => {
       const prefix8 = s.id.slice(0, 8);
       for (const t of teams) {
         if (t.leadPrefix && prefix8 === t.leadPrefix) {
+          // cfg.members includes the lead's own entry (agentType 'team-lead') —
+          // exclude it so it doesn't show up as a "member" nested under itself.
+          const teammates = t.members.filter(m => m.agentType !== 'team-lead');
           s.team = {
-            name: t.teamName, role: 'lead', size: t.members.length,
-            members: t.members.map(m => ({ name: m.name, agentType: m.agentType, status: m.status })),
+            name: t.teamName, role: 'lead', size: teammates.length,
+            members: teammates.map(m => ({ name: m.name, agentType: m.agentType, status: m.status, sessionId: m.sessionId })),
           };
         } else if (t.members.some(m => m.sessionId && m.sessionId === s.id)) {
           const me = t.members.find(m => m.sessionId === s.id);

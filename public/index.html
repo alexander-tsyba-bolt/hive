@@ -335,7 +335,33 @@
     .session-card.open { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(9,105,218,0.1); }
     .badge-open { background: #ddf4ff; color: var(--accent); border: 1px solid #b6e3ff; }
     .badge-team { background: #fdf0e6; color: #9a4f00; border: 1px solid #f3c89a; cursor: help; }
-    .card-team { font-size: 10px; color: #9a4f00; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* ── Team section (expandable tile: lead + nested members) ── */
+    .team-toggle {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 10px; color: #9a4f00; cursor: pointer; user-select: none;
+      padding: 2px 0;
+    }
+    .team-toggle:hover { color: #7a3f00; }
+    .team-chevron { font-size: 9px; width: 10px; flex-shrink: 0; text-align: center; }
+    .team-alert-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); flex-shrink: 0; animation: pulse 2s ease-in-out infinite; }
+
+    .team-members {
+      display: flex; flex-direction: column; gap: 2px;
+      margin: 4px 0 0 4px;
+      padding-left: 9px;
+      border-left: 2px solid #f3c89a;
+    }
+    .team-member-row { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 2px 4px; border-radius: 4px; }
+    .team-member-row:hover { background: var(--surface2); }
+    .member-name { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .member-type { color: var(--text-faint); font-size: 9px; font-family: var(--mono); }
+    .member-pending { color: var(--text-faint); font-size: 10px; font-style: italic; margin-left: auto; }
+    .member-open-btn { margin-left: auto; padding: 1px 8px; font-size: 10px; }
+    .member-dot-running { background: var(--green); animation: pulse 1.4s infinite; }
+    .member-dot-waiting { background: var(--orange); animation: pulse 2s ease-in-out infinite; }
+    .member-dot-failed { background: var(--red); }
+    .member-dot-done, .member-dot-idle { background: var(--text-faint); }
     /* Drag-to-reorder terminals (handle = titlebar) */
     .terminal-titlebar { cursor: grab; user-select: none; }
     .terminal-titlebar:active { cursor: grabbing; }
@@ -581,6 +607,7 @@
   let draggingTermId = null;        // termId currently being dragged
   let prevSessionStates = new Map(); // sessionId -> state, for detecting waiting transitions
   let termWaitingSessionIds = new Set(); // session IDs whose open terminal is showing an interactive prompt
+  let expandedTeams = new Set();    // lead session IDs whose team tile is expanded
 
   // Hive naming is fully decoupled from Claude's JSONL naming.
   // customName is set exclusively in Hive and never overridden by Claude.
@@ -763,7 +790,10 @@
     const openSessions = visible
       .filter(s => openSessionIds.has(s.id) && !waitingIds.has(s.id))
       .sort((a, b) => orderIndexForSession(a) - orderIndexForSession(b));
-    const restSessions = visible.filter(s => !openSessionIds.has(s.id) && !waitingIds.has(s.id));
+    // Team members nest inside their lead's tile instead of getting their own
+    // flat card here — but they still surface normally in Needs Input / Open
+    // Terminals above, same as any other session in those states.
+    const restSessions = visible.filter(s => !openSessionIds.has(s.id) && !waitingIds.has(s.id) && !isTeamMember(s));
 
     const needsInputSection = document.getElementById('needs-input-section');
     if (waitingSessions.length) {
@@ -809,9 +839,7 @@
     const badgeGroup = s.group
       ? `<span class="badge badge-group" onclick="showGroupModal('${s.id}')" title="Group: ${esc(s.group)}">${esc(s.group)} ✎</span>`
       : '';
-    const teamLine = (s.team && s.team.role === 'lead' && s.team.members && s.team.members.length)
-      ? `<div class="card-team" title="Agent team members">👥 ${s.team.members.map(m => esc(m.name || m.agentType || 'agent')).join(', ')}</div>`
-      : '';
+    const teamSection = renderTeamSection(s);
     const archLbl = s.archived ? 'Unarchive' : 'Archive';
     const cardCls = ['session-card', s.archived ? 'archived' : '', isOpen ? 'open' : ''].filter(Boolean).join(' ');
     const closeBtn = isOpen
@@ -824,7 +852,7 @@
         <div class="card-badges">${badgeState}${badgeSrc}${badgeModel}${badgeEffort}${badgeOpen}${badgeTeam}${badgeGroup}</div>
         <div class="card-name" id="cname-${s.id}" onclick="startRename('${s.id}')" title="Click to rename">${esc(dname)}</div>
         <div class="card-cwd" title="${esc(s.cwd)}">${esc(s.cwdShort || s.cwd)}</div>
-        ${teamLine}
+        ${teamSection}
         <div class="card-time">${timeAgo(s.lastActivity)}</div>
         <div class="card-actions">
           <button class="btn btn-sm${isOpen ? ' btn-primary' : ''}" onclick="openTerminalFor('${s.id}')">
@@ -1505,7 +1533,7 @@
     }
   }
 
-  // ── Team badge + open-list ordering ─────────────────────────────────────────
+  // ── Team badge + expandable team tile ───────────────────────────────────────
   function teamBadge(team) {
     if (!team) return '';
     if (team.role === 'lead') {
@@ -1513,6 +1541,50 @@
       return `<span class="badge badge-team" title="Agent team lead${names ? ' — ' + esc(names) : ''}">👥 team${team.size != null ? ' (' + team.size + ')' : ''}</span>`;
     }
     return `<span class="badge badge-team" title="Teammate${team.agentType ? ' — ' + esc(team.agentType) : ''}">👥 ${esc(team.memberName || 'teammate')}</span>`;
+  }
+
+  function isTeamMember(s) { return !!(s.team && s.team.role === 'member'); }
+
+  // Lead card only: nested, collapsible list of teammates. Each resolves to its
+  // own independent session (once that teammate has written its own JSONL) and
+  // opens via the same openTerminalFor() as any other card.
+  function renderTeamSection(s) {
+    const team = s.team;
+    if (!team || team.role !== 'lead' || !team.members || !team.members.length) return '';
+    const expanded = expandedTeams.has(s.id);
+    const anyNeedsAttention = team.members.some(m => {
+      const r = m.sessionId ? sessionMap.get(m.sessionId) : null;
+      return r && (r.state === 'waiting' || r.state === 'failed' || termWaitingSessionIds.has(r.id));
+    });
+
+    const rows = team.members.map(m => {
+      const resolved = m.sessionId ? sessionMap.get(m.sessionId) : null;
+      const label = esc(m.name || m.agentType || 'teammate');
+      const typeLabel = (m.agentType && m.agentType !== m.name) ? `<span class="member-type">${esc(m.agentType)}</span>` : '';
+      const dot = `<span class="bdot member-dot-${resolved ? resolved.state : 'idle'}"></span>`;
+      const action = resolved
+        ? (() => {
+            const memberIsOpen = openSessionIds.has(resolved.id);
+            return `<button class="btn btn-sm member-open-btn${memberIsOpen ? ' btn-primary' : ''}" onclick="openTerminalFor('${resolved.id}')">${memberIsOpen ? '↗ Focus' : 'Open'}</button>`;
+          })()
+        : `<span class="member-pending" title="No session found yet for this teammate">starting…</span>`;
+      return `<div class="team-member-row">${dot}<span class="member-name" title="${label}">${label}</span>${typeLabel}${action}</div>`;
+    }).join('');
+
+    return `
+      <div class="team-section">
+        <div class="team-toggle" onclick="toggleTeam('${s.id}')" title="${expanded ? 'Collapse' : 'Expand'} team">
+          <span class="team-chevron">${expanded ? '▾' : '▸'}</span>
+          <span>👥 Team (${team.members.length})</span>
+          ${anyNeedsAttention ? '<span class="team-alert-dot" title="A teammate needs attention"></span>' : ''}
+        </div>
+        <div class="team-members" style="${expanded ? '' : 'display:none'}">${rows}</div>
+      </div>`;
+  }
+
+  function toggleTeam(id) {
+    if (expandedTeams.has(id)) expandedTeams.delete(id); else expandedTeams.add(id);
+    renderSessions();
   }
 
   function orderIndexForSession(s) {
