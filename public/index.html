@@ -269,6 +269,21 @@
 
     .card-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 3px; }
 
+    .card-close {
+      margin-left: auto;
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: var(--text-faint);
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      padding: 0 2px;
+      border-radius: 3px;
+    }
+
+    .card-close:hover { color: var(--text); background: var(--border); }
+
     /* ── Terminals panel ── */
     .terminals-panel {
       flex: 1;
@@ -797,10 +812,13 @@
       : '';
     const archLbl = s.archived ? 'Unarchive' : 'Archive';
     const cardCls = ['session-card', s.archived ? 'archived' : '', isOpen ? 'open' : ''].filter(Boolean).join(' ');
+    const closeBtn = isOpen
+      ? `<button class="card-close" onclick="closeSessionTerminal('${s.id}')" title="Close open terminal">×</button>`
+      : '';
 
     return `
       <div class="${cardCls}" id="card-${s.id}">
-        <div class="card-badges">${badgeState}${badgeSrc}${badgeModel}${badgeEffort}${badgeOpen}${badgeTeam}${badgeGroup}</div>
+        <div class="card-badges">${badgeState}${badgeSrc}${badgeModel}${badgeEffort}${badgeOpen}${badgeTeam}${badgeGroup}${closeBtn}</div>
         <div class="card-name" id="cname-${s.id}" onclick="startRename('${s.id}')" title="Click to rename">${esc(dname)}</div>
         <div class="card-cwd" title="${esc(s.cwd)}">${esc(s.cwdShort || s.cwd)}</div>
         ${teamLine}
@@ -1344,6 +1362,15 @@
       }, entry.reconnectDelay);
     };
     ws.onerror = () => { try { ws.close(); } catch {} };
+  }
+
+  // Close every open terminal pane tied to a session (usually one, but a
+  // session opened via both attach and fork could have more than one).
+  function closeSessionTerminal(sessionId) {
+    const ids = [...openTerminals.entries()]
+      .filter(([, t]) => t.sessionId === sessionId)
+      .map(([termId]) => termId);
+    ids.forEach(id => closeTerminal(id));
   }
 
   function closeTerminal(termId, serverGone) {
