@@ -374,7 +374,8 @@ app.get('/api/sessions', (req, res) => {
         for (const file of fs.readdirSync(projPath)) {
           if (!file.endsWith('.jsonl')) continue;
           const sid = file.replace('.jsonl', '');
-          if (sessions.has(sid)) continue;
+          const existing = sessions.get(sid);
+          if (existing && existing.source !== 'history') continue; // job entries always win
           const sm = meta[sid] || {};
           if (sm.deleted) continue;
           const jsonlPath = path.join(projPath, file);
@@ -382,6 +383,19 @@ app.get('/api/sessions', (req, res) => {
           const jm = parseSessionMetaCached(jsonlPath);
           const live = registry.get(sid);
           const fullCwd = jm.cwd || HOME;
+          if (existing) {
+            // Same session split across two project dirs — typically a renamed
+            // mount (e.g. GDrive locale flip) left a stale encoded folder behind
+            // whose cwd no longer resolves. Prefer the copy whose cwd still
+            // exists on disk, then whichever was modified more recently, so a
+            // resume never gets silently routed through a dead path into HOME.
+            const existingCwdOk = fs.existsSync(existing.cwd);
+            const candidateCwdOk = fs.existsSync(fullCwd);
+            const candidateIsBetter = candidateCwdOk !== existingCwdOk
+              ? candidateCwdOk
+              : stat.mtime > new Date(existing.lastActivity || 0);
+            if (!candidateIsBetter) continue;
+          }
           sessions.set(sid, {
             id: sid,
             shortId: sid.slice(0, 8),
