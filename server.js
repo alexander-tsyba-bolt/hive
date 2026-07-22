@@ -210,7 +210,12 @@ function loadLiveRegistry() {
         status: d.status || null,
         updatedAt: d.updatedAt || 0,
         bgLive: alive && d.kind === 'bg',
-        busyLive: alive && d.status === 'busy',
+        // The CLI writes more than one active-work status here — 'busy' while
+        // generating, but also e.g. 'shell' while a Bash-backed tool call is
+        // running (confirmed by watching this file live). 'idle' (or no status
+        // at all) is the only genuine at-rest value, so treat anything else as
+        // busy instead of allowlisting a single string and missing the rest.
+        busyLive: alive && !!d.status && d.status !== 'idle',
       };
       const prev = out.get(sid);
       if (!prev) { out.set(sid, entry); continue; }
