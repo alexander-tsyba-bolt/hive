@@ -639,9 +639,11 @@
       const s = sessionMap.get(sid);
       if (s) fireWaitingNotification(s);
       renderSessions();
+      refreshTerminalChip(termId, entry);
     } else if (!promptFound && wasWaiting) {
       termWaitingSessionIds.delete(sid);
       renderSessions();
+      refreshTerminalChip(termId, entry);
     }
   }
 
@@ -759,6 +761,11 @@
           if (el && el.textContent !== name) el.textContent = name;
         }
       }
+
+      // State (running/idle/failed/done) is polled fresh every cycle but was
+      // never pushed into the open pane's own titlebar chip — only the grid
+      // card, which fully re-renders each time. Keep both in sync.
+      if (t.sessionId) refreshTerminalChip(termId, t);
     }
   }
 
@@ -1255,6 +1262,27 @@
 
   // ── Terminal panes ─────────────────────────────────────────────────────────
 
+  function terminalChipsHtml(state, model, effort) {
+    const stateChip = state ? `<span class="badge badge-${state}"><span class="bdot"></span>${state}</span>` : '';
+    const modelChip = model ? `<span class="badge badge-model">${esc(shortModel(model))}</span>` : '';
+    const effortChip = effort ? `<span class="badge badge-effort">${esc(effort)}</span>` : '';
+    return `${stateChip}${modelChip}${effortChip}`;
+  }
+
+  // The titlebar chip is only as fresh as the last call here — createTerminalPane()
+  // sets it once at open time, so callers that learn about a state change later
+  // (session poll, PTY prompt scan) must call this or the open pane's own badge
+  // goes stale even though the grid card (which fully re-renders each poll) doesn't.
+  function refreshTerminalChip(termId, entry) {
+    if (!entry.sessionId) return;
+    const s = sessionMap.get(entry.sessionId);
+    const effectiveState = termWaitingSessionIds.has(entry.sessionId) ? 'waiting' : (s ? s.state : entry.state);
+    if (effectiveState === entry.state) return;
+    entry.state = effectiveState;
+    const chipsEl = document.getElementById(`tchips-${termId}`);
+    if (chipsEl) chipsEl.innerHTML = terminalChipsHtml(entry.state, entry.model, entry.effort);
+  }
+
   function createTerminalPane(termId, info) {
     const { name, state, model, effort, sessionId } = info;
 
@@ -1264,10 +1292,6 @@
       renderSessions(); // refresh cards to show highlight
     }
 
-    const stateChip = state ? `<span class="badge badge-${state}"><span class="bdot"></span>${state}</span>` : '';
-    const modelChip = model ? `<span class="badge badge-model">${esc(shortModel(model))}</span>` : '';
-    const effortChip = effort ? `<span class="badge badge-effort">${esc(effort)}</span>` : '';
-
     const pane = document.createElement('div');
     pane.className = 'terminal-pane';
     pane.id = `pane-${termId}`;
@@ -1275,7 +1299,7 @@
     pane.innerHTML = `
       <div class="terminal-titlebar">
         <span class="terminal-titlebar-name" id="tname-${termId}">${esc(name)}</span>
-        <div class="terminal-titlebar-chips">${stateChip}${modelChip}${effortChip}</div>
+        <div class="terminal-titlebar-chips" id="tchips-${termId}">${terminalChipsHtml(state, model, effort)}</div>
         <button class="terminal-close" onclick="closeTerminal('${termId}')" title="Close">×</button>
       </div>
       <div class="terminal-body" id="tbody-${termId}"></div>`;
@@ -1324,6 +1348,7 @@
       xterm, fitAddon, ws: null, ro: null,
       sessionId: info.sessionId, fixedTitle: !!info.fixedTitle,
       name: info.name || '', model: info.model || null, effort: info.effort || null, cwd: info.cwd || null,
+      state: info.state || null,
       closing: false, reconnectDelay: 500, reconnectTimer: null,
     };
     if (!info.sessionId && info.cwd) {
