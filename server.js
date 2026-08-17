@@ -26,11 +26,35 @@ let claudeBin = 'claude';
 try { claudeBin = execSync('which claude', { encoding: 'utf8' }).trim(); } catch {}
 
 // ── Security guard ────────────────────────────────────────────────────────
-// This server has no auth. Binding to 127.0.0.1 stops LAN peers, but a website
-// the user visits can still reach localhost via DNS rebinding. Defeat that by
-// rejecting any request whose Host header isn't loopback (the browser sends the
-// attacker's hostname, e.g. evil.com, which fails this check).
+// Two independent controls, because this process can spawn an interactive Claude
+// PTY with the user's full credentials:
+//
+//   1. Host allowlist. A website the user visits can reach 127.0.0.1 via DNS
+//      rebinding, but the browser sends the attacker's hostname in Host, which
+//      fails this check. Only loopback and this machine's NetBird address pass.
+//   2. Bearer token, required on every non-loopback request. NetBird is the Bolt
+//      corporate mesh, not a trusted network — other employees' machines are peers
+//      on it — so reaching the port must not be sufficient to use it.
+//
+// Loopback stays token-free: anything running as this user locally can already
+// spawn `claude` directly, so a token there guards nothing and only adds friction.
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+// NetBird hands out addresses in the 100.64.0.0/10 CGNAT range on a utun device.
+// Resolve at startup rather than hardcoding: the mesh address can change.
+function netbirdAddress() {
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (a.family !== 'IPv4' || a.internal) continue;
+      const [o1, o2] = a.address.split('.').map(Number);
+      if (o1 === 100 && o2 >= 64 && o2 <= 127) return a.address;
+    }
+  }
+  return null;
+}
+const NETBIRD_IP = netbirdAddress();
+const NETBIRD_FQDN = (process.env.HIVE_NETBIRD_FQDN || '').trim().toLowerCase() || null;
+
 function hostnameOf(value) {
   if (!value) return null;
   const m = /^(\[[^\]]+\]|[^:]+)(?::\d+)?$/.exec(String(value).trim());
@@ -40,8 +64,82 @@ function isLoopback(value) {
   const h = hostnameOf(value);
   return h !== null && LOOPBACK_HOSTS.has(h);
 }
+function isAllowedHost(value) {
+  const h = hostnameOf(value);
+  if (h === null) return false;
+  if (LOOPBACK_HOSTS.has(h)) return true;
+  if (NETBIRD_IP && h === NETBIRD_IP) return true;
+  if (NETBIRD_FQDN && h === NETBIRD_FQDN) return true;
+  return false;
+}
+
+// ── Token ─────────────────────────────────────────────────────────────────
+// Kept outside the repo so it can never be committed. Generated on first run.
+const TOKEN_FILE = path.join(HOME, '.config', 'hive', 'token');
+function loadToken() {
+  if (process.env.HIVE_TOKEN) return process.env.HIVE_TOKEN.trim();
+  try {
+    const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+    if (t) return t;
+  } catch {}
+  const t = crypto.randomBytes(32).toString('base64url');
+  fs.mkdirSync(path.dirname(TOKEN_FILE), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(TOKEN_FILE, t + '\n', { mode: 0o600 });
+  return t;
+}
+const TOKEN = loadToken();
+const COOKIE_NAME = 'hive_token';
+
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  // timingSafeEqual throws on length mismatch, so compare a fixed-size digest.
+  return crypto.timingSafeEqual(
+    crypto.createHash('sha256').update(ba).digest(),
+    crypto.createHash('sha256').update(bb).digest(),
+  );
+}
+function cookieToken(cookieHeader) {
+  if (!cookieHeader) return null;
+  for (const part of String(cookieHeader).split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === COOKIE_NAME) {
+      try { return decodeURIComponent(part.slice(i + 1).trim()); } catch { return null; }
+    }
+  }
+  return null;
+}
+// Accepts the token from a cookie (browser, after first visit), an Authorization
+// header (curl), or a ?token= query param (the first visit / the link you open
+// on your phone). Returns 'query' when it came from the URL so the caller can
+// set the cookie and redirect the token out of the address bar and history.
+function tokenSource(req, url) {
+  const auth = req.headers.authorization;
+  if (auth && /^Bearer\s+/i.test(auth) && safeEqual(auth.replace(/^Bearer\s+/i, '').trim(), TOKEN)) return 'header';
+  const c = cookieToken(req.headers.cookie);
+  if (c && safeEqual(c, TOKEN)) return 'cookie';
+  const q = url && url.searchParams.get('token');
+  if (q && safeEqual(q, TOKEN)) return 'query';
+  return null;
+}
+
 app.use((req, res, next) => {
-  if (!isLoopback(req.headers.host)) return res.status(403).end('Forbidden');
+  if (!isAllowedHost(req.headers.host)) return res.status(403).end('Forbidden');
+  if (isLoopback(req.headers.host)) return next();
+
+  const url = new URL(req.originalUrl || req.url, 'http://placeholder');
+  const src = tokenSource(req, url);
+  if (!src) return res.status(401).end('Unauthorized');
+
+  if (src === 'query') {
+    // Persist it, then strip it from the URL so the token doesn't linger in
+    // browser history, bookmarks or the Referer header.
+    res.setHeader('Set-Cookie',
+      `${COOKIE_NAME}=${encodeURIComponent(TOKEN)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`);
+    url.searchParams.delete('token');
+    return res.redirect(302, url.pathname + (url.search || ''));
+  }
   next();
 });
 
@@ -731,14 +829,21 @@ app.delete('/api/terminal/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-wss.on('connection', (ws, req) => {
-  // Same loopback guard as HTTP: reject non-loopback Host, and reject any
-  // cross-origin upgrade (WebSockets bypass CORS, so check Origin explicitly).
+function handleWsConnection(ws, req) {
+  // Same guard as HTTP. WebSockets bypass CORS, so Origin is checked explicitly:
+  // a cross-origin page must not be able to upgrade into a live PTY.
   const origin = req.headers.origin;
-  if (!isLoopback(req.headers.host) || (origin && !isLoopback(new URL(origin).host))) {
+  let originHost = null;
+  if (origin) {
+    try { originHost = new URL(origin).host; } catch { ws.close(4003, 'Forbidden'); return; }
+  }
+  if (!isAllowedHost(req.headers.host) || (originHost && !isAllowedHost(originHost))) {
     ws.close(4003, 'Forbidden'); return;
   }
   const url = new URL(req.url, 'http://localhost');
+  if (!isLoopback(req.headers.host) && !tokenSource(req, url)) {
+    ws.close(4001, 'Unauthorized'); return;
+  }
   const termId = url.searchParams.get('id');
   const td = terminals.get(termId);
   if (!td) { ws.close(4004, 'Not found'); return; }
@@ -756,11 +861,11 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => td.clients.delete(ws));
   ws.on('error', () => td.clients.delete(ws));
-});
+}
+
+wss.on('connection', handleWsConnection);
 
 const PORT = process.env.PORT || 3737;
-// Bind to loopback only — never expose the terminal/PTY surface to the network.
-// This server has no auth; any LAN peer reaching it could spawn a Claude PTY.
 const HOST = process.env.HOST || '127.0.0.1';
 function handlePortInUse(err) {
   if (err.code === 'EADDRINUSE') {
@@ -774,3 +879,32 @@ function handlePortInUse(err) {
 server.on('error', handlePortInUse);
 wss.on('error', handlePortInUse);
 server.listen(PORT, HOST, () => console.log(`Hive: http://localhost:${PORT}`));
+
+// ── Optional NetBird listener ────────────────────────────────────────────────
+// Off unless HIVE_NETBIRD=1, so the default deployment stays loopback-only and
+// enabling remote reach is a visible, revocable line in the launchd plist rather
+// than an implicit property of the code. A second listener bound to the mesh
+// address specifically is deliberate: binding 0.0.0.0 would also open the port on
+// whatever café or hotel wifi the laptop joins.
+if (process.env.HIVE_NETBIRD === '1') {
+  if (!NETBIRD_IP) {
+    console.log('HIVE_NETBIRD=1 but no NetBird address found — serving loopback only.');
+  } else {
+    const nbServer = http.createServer(app);
+    const nbWss = new WebSocketServer({ server: nbServer, path: '/ws' });
+    nbWss.on('connection', handleWsConnection);
+    // NetBird may be down at boot; log and keep loopback rather than crash-looping
+    // under launchd KeepAlive.
+    const softFail = err => console.log(`NetBird listener unavailable (${err.code || err.message}) — serving loopback only.`);
+    nbServer.on('error', softFail);
+    nbWss.on('error', softFail);
+    nbServer.listen(PORT, NETBIRD_IP, () => {
+      // Prefer the mesh hostname over the raw IP: NetBird can reassign the IP, but
+      // its DNS keeps this hostname pointed at whatever the current one is, so a
+      // bookmarked link built from it doesn't go stale.
+      const displayHost = NETBIRD_FQDN || NETBIRD_IP;
+      console.log(`Hive on NetBird: http://${displayHost}:${PORT}/?token=<token>`);
+      console.log(`  token: ${TOKEN_FILE}`);
+    });
+  }
+}

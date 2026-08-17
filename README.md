@@ -155,12 +155,45 @@ In Safari: Share → Add to Dock.
 
 ## Security
 
-- Server binds to **127.0.0.1 only** — never reachable from other machines on the network
-- **DNS-rebinding protection**: requests with a non-loopback `Host` header are rejected with 403, so a malicious website cannot reach the local server through the browser
+- Server binds to **127.0.0.1 only** by default — never reachable from other machines on the network
+- **DNS-rebinding protection**: requests with a `Host` header outside the allowlist are rejected with 403, so a malicious website cannot reach the local server through the browser
 - Terminal I/O stays entirely local: `PTY ↔ WebSocket (localhost) ↔ browser`
 - Session history is read from `~/.claude/` — no API calls to Anthropic
 - xterm.js is bundled in `public/` — zero CDN requests after install
 - File open uses `execFile` (no shell), safe against paths with special characters
+
+### Remote access over a mesh VPN (optional)
+
+Off by default. Setting `HIVE_NETBIRD=1` starts a **second** listener bound specifically to this
+machine's NetBird address (any `100.64.0.0/10` address on a `utun` device, resolved at startup).
+Binding to that address rather than `0.0.0.0` is deliberate: `0.0.0.0` would also open the port on
+whatever café or hotel wifi the laptop joins.
+
+A mesh VPN is not a trusted network — other people's machines are peers on it — so every
+non-loopback request additionally needs a **bearer token**:
+
+- Generated on first run into `~/.config/hive/token`, mode `0600`, outside the repo.
+- Override with `HIVE_TOKEN`. Rotate by deleting the file and restarting.
+- Accepted as a `Bearer` header (curl), a cookie (browser, after the first visit), or `?token=…`
+  in the URL. The query form sets an `HttpOnly; SameSite=Lax` cookie and then **redirects the
+  token out of the URL**, so it doesn't linger in history, bookmarks or `Referer`.
+- Compared with a timing-safe digest comparison, not `===`.
+- The WebSocket upgrade is checked the same way, plus an explicit `Origin` check, because
+  WebSockets bypass CORS and this one leads to a live PTY.
+
+Loopback stays token-free: anything running as this user locally can already run `claude`
+directly, so a token there guards nothing and only adds friction.
+
+Set `HIVE_NETBIRD_FQDN` to your machine's NetBird hostname (`netbird status` → `FQDN:`). Use
+that, not the raw IP, for the link you actually bookmark: NetBird can reassign the IP, but its
+DNS keeps the hostname resolving to whatever the current one is, so the link doesn't go stale.
+The raw IP still works as a fallback if `HIVE_NETBIRD_FQDN` isn't set.
+
+```
+http://<netbird-hostname>:3737/?token=$(cat ~/.config/hive/token)
+```
+
+To turn remote access back off, remove `HIVE_NETBIRD` from the launch agent and reload it.
 
 ## Architecture
 
