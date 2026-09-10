@@ -1400,6 +1400,17 @@
       renderSessions(); // refresh cards to show highlight
     }
 
+    // Codex's `state` is often just the server's best-effort ps/lsof guess (see
+    // findLiveCodexCwds), taken once at open time — it can say "running" for a pane
+    // that's actually idle. checkTerminalWaiting only corrects the header chip on a
+    // running↔idle *transition*, so a pane that opens idle and never transitions
+    // would stay stuck on a stale "running" chip while the grid card (which always
+    // recomputes from termCodexWorkingIds) correctly shows idle. Seed from the same
+    // Set it'll be reconciled against so both start in sync.
+    const badgeState = (engine === 'codex' && sessionId)
+      ? (termCodexWorkingIds.has(sessionId) ? 'running' : 'idle')
+      : state;
+
     const pane = document.createElement('div');
     pane.className = 'terminal-pane';
     pane.id = `pane-${termId}`;
@@ -1407,7 +1418,7 @@
     pane.innerHTML = `
       <div class="terminal-titlebar">
         <span class="terminal-titlebar-name" id="tname-${termId}">${esc(name)}</span>
-        <div class="terminal-titlebar-chips" id="tchips-${termId}">${terminalChipsHtml(state, model, effort, engine)}</div>
+        <div class="terminal-titlebar-chips" id="tchips-${termId}">${terminalChipsHtml(badgeState, model, effort, engine)}</div>
         <button class="terminal-close" onclick="closeTerminal('${termId}')" title="Close">×</button>
       </div>
       <div class="terminal-body" id="tbody-${termId}"></div>`;
@@ -1457,7 +1468,7 @@
       sessionId: info.sessionId, fixedTitle: !!info.fixedTitle,
       name: info.name || '', model: info.model || null, effort: info.effort || null, cwd: info.cwd || null,
       engine: info.engine || 'claude',
-      state: info.state || null,
+      state: badgeState || null,
       closing: false, reconnectDelay: 500, reconnectTimer: null,
     };
     if (!info.sessionId && info.cwd) {
