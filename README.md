@@ -49,6 +49,7 @@ A web-based session manager and terminal UI for [Claude Code](https://claude.ai/
 
 - **Node.js** ≥ 18
 - **Claude Code** CLI (`claude`) installed and authenticated
+- **Codex CLI** (`codex`) — optional, only needed to launch Codex sessions (see [Engines](#engines))
 - macOS (uses `open -a` for file routing; small changes needed for Linux/Windows)
 
 ## Setup
@@ -135,7 +136,7 @@ In Safari: Share → Add to Dock.
 | Archive | **Archive** button (reversible) |
 | Delete | **Delete** → confirm |
 | Filter | State/source pills in the filter bar |
-| New session | **+ New Session** → model, effort, directory |
+| New session | **+ New Session** → engine, model, effort, directory |
 
 ### Terminals
 
@@ -152,6 +153,22 @@ In Safari: Share → Add to Dock.
 | `.html`, `.htm` | Google Chrome |
 | `.md`, `.py`, `.ipynb`, `.json`, `.yaml`, `.csv`, `.sh`, and most code/text formats | VS Code |
 | Everything else | macOS system default |
+
+## Engines
+
+Hive can spawn two CLIs into the same terminal grid, picked per-session from the **Engine** field in **+ New Session**:
+
+- **Claude Code** (`claude`) — full support: sessions grid, resume, fork, live state badges, agent teams.
+- **Codex CLI** (`codex`) — picking a working directory and hitting Launch opens a real `codex` process in that folder, with optional model and reasoning-effort overrides (defaults to `gpt-5.6-luna` / `max`, both editable). The Codex option is disabled in the dropdown if `codex` wasn't found on `PATH` when Hive started. Codex sessions also appear in the sessions grid (tagged with a `codex` badge), reusing the same rename/group/archive/delete as Claude sessions.
+
+What's different from Claude, by design: Codex has no live-process registry file to read (`~/.claude/sessions/*.json` has no equivalent), so `running`/`idle` comes from two layered signals depending on whether the pane is open in Hive right now:
+
+- **Open in a Hive pane**: read directly off Codex's own status bar (`─ Working ───...─` while generating, `─ Worked for 50m 33s ───...─` once the turn ends) via the same PTY-text scan that already detects Claude's "waiting for approval" prompts. This is a real, direct signal, not a guess.
+- **Not open in Hive** (closed pane, or a session started via the Codex Desktop app or a plain terminal): falls back to a `ps`/`lsof` scan for a live `codex` process whose cwd matches — a **best-effort guess**, wrong in either direction is possible, a hint not a fact.
+
+Because the fallback is a guess, opening a session the grid *thinks* is already running elsewhere (fallback case only) prompts for confirmation first — Codex has no verified attach-to-a-live-session equivalent to Claude's agent-teams modal, so resuming into a real conflict is a real (if unlikely) risk, not just a UI nuisance. Fork isn't wired up for Codex sessions yet, only resume.
+
+Verified 2026-09-09 against a real install (codex-cli 0.153.4): `--model`, `-c model_reasoning_effort=<level>` (including the undocumented `max` tier, confirmed live), and the `resume <id>` / `fork <id>` positional form all match `codex --help` exactly. The rollout-file scan and delete path were tested against a throwaway Hive instance on a scratch port with real rollout files (including one genuinely launched through the Hive UI) — not yet exercised through the actual browser UI end to end.
 
 ## Security
 
@@ -199,8 +216,8 @@ To turn remote access back off, remove `HIVE_NETBIRD` from the launch agent and 
 
 ```
 server.js
-  /api/sessions    Reads ~/.claude/jobs/ and ~/.claude/projects/
-  /api/terminal    Spawns the Claude CLI in a node-pty PTY
+  /api/sessions    Reads ~/.claude/jobs/ and ~/.claude/projects/ (Claude only)
+  /api/terminal    Spawns claude or codex in a node-pty PTY, per `engine`
   /api/open        Opens files with native apps via execFile
   /ws              Bidirectional PTY ↔ browser WebSocket
 

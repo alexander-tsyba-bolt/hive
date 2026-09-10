@@ -8,7 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
-const { execSync, execFile } = require('child_process');
+const { execSync, execFile, execFileSync } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
@@ -21,9 +21,15 @@ const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 const SESSIONS_DIR = path.join(CLAUDE_DIR, 'sessions'); // live process registry the CLI maintains
 const TEAMS_DIR = path.join(CLAUDE_DIR, 'teams');       // agent-teams config (experimental)
 const META_FILE = path.join(CLAUDE_DIR, 'web-sessions-meta.json');
+const CODEX_DIR = path.join(HOME, '.codex');
+const CODEX_SESSIONS_DIR = path.join(CODEX_DIR, 'sessions'); // rollout-*.jsonl under YYYY/MM/DD
 
 let claudeBin = 'claude';
 try { claudeBin = execSync('which claude', { encoding: 'utf8' }).trim(); } catch {}
+
+let codexBin = 'codex';
+let codexAvailable = false;
+try { codexBin = execSync('which codex', { encoding: 'utf8' }).trim(); codexAvailable = true; } catch {}
 
 // ── Security guard ────────────────────────────────────────────────────────
 // Two independent controls, because this process can spawn an interactive Claude
@@ -391,11 +397,106 @@ function findJsonlPath(sessionId) {
   return null;
 }
 
+// ── Codex sessions ───────────────────────────────────────────────────────────
+// No live registry file like Claude's ~/.claude/sessions/*.json, and a different
+// transcript format (~/.codex/sessions/YYYY/MM/DD/rollout-<id>.jsonl). Reuses the
+// same web-sessions-meta.json store for rename/group/archive/delete — engine-
+// agnostic already, keyed only by session id.
+
+function listCodexRolloutFiles() {
+  const out = [];
+  if (!fs.existsSync(CODEX_SESSIONS_DIR)) return out;
+  try {
+    for (const y of fs.readdirSync(CODEX_SESSIONS_DIR)) {
+      const yp = path.join(CODEX_SESSIONS_DIR, y);
+      if (!fs.statSync(yp).isDirectory()) continue;
+      for (const m of fs.readdirSync(yp)) {
+        const mp = path.join(yp, m);
+        if (!fs.statSync(mp).isDirectory()) continue;
+        for (const d of fs.readdirSync(mp)) {
+          const dp = path.join(mp, d);
+          if (!fs.statSync(dp).isDirectory()) continue;
+          for (const f of fs.readdirSync(dp)) {
+            if (f.startsWith('rollout-') && f.endsWith('.jsonl')) out.push(path.join(dp, f));
+          }
+        }
+      }
+    }
+  } catch {}
+  return out;
+}
+
+// `session_meta` is always line 0, but on some launch surfaces it embeds the
+// entire system prompt inline (observed: tens of KB), so the head buffer has to
+// be much larger than Claude's equivalent (parseSessionMeta's 16KB would clip it).
+function parseCodexSessionMeta(jsonlPath, size) {
+  try {
+    const headLen = Math.min(131072, size);
+    const fd = fs.openSync(jsonlPath, 'r');
+    const head = Buffer.alloc(headLen);
+    fs.readSync(fd, head, 0, headLen, 0);
+    fs.closeSync(fd);
+    const nl = head.indexOf(10); // '\n'
+    const line = (nl === -1 ? head : head.subarray(0, nl)).toString('utf8');
+    const d = JSON.parse(line);
+    return d.payload || {};
+  } catch {
+    return {};
+  }
+}
+
+const codexMetaCache = new Map(); // jsonlPath -> { mtimeMs, size, meta }
+function parseCodexSessionMetaCached(jsonlPath, stat) {
+  const c = codexMetaCache.get(jsonlPath);
+  if (c && c.mtimeMs === stat.mtimeMs && c.size === stat.size) return c.meta;
+  const meta = parseCodexSessionMeta(jsonlPath, stat.size);
+  codexMetaCache.set(jsonlPath, { mtimeMs: stat.mtimeMs, size: stat.size, meta });
+  return meta;
+}
+
+function scanCodexSessions() {
+  const out = [];
+  for (const fp of listCodexRolloutFiles()) {
+    try {
+      const stat = fs.statSync(fp);
+      if (stat.size === 0) continue;
+      const meta = parseCodexSessionMetaCached(fp, stat);
+      const sid = meta.session_id;
+      if (!sid) continue;
+      out.push({ id: sid, cwd: meta.cwd || HOME, lastActivity: stat.mtime.toISOString(), path: fp });
+    } catch {}
+  }
+  return out;
+}
+
+// Best-effort liveness: no registry file to read, so find real `codex` processes
+// and resolve each one's cwd. Approximate by design — a false positive/negative
+// here just mis-colors a badge, it never blocks or corrupts anything.
+function findLiveCodexCwds() {
+  const cwds = new Set();
+  if (!codexAvailable) return cwds;
+  let psOut;
+  try { psOut = execSync('ps -axo pid,comm', { encoding: 'utf8' }); } catch { return cwds; }
+  const pids = [];
+  for (const line of psOut.split('\n').slice(1)) {
+    const m = line.trim().match(/^(\d+)\s+(.*)$/);
+    if (m && path.basename(m[2].trim()) === 'codex') pids.push(m[1]);
+  }
+  for (const pid of pids) {
+    try {
+      const lsofOut = execFileSync('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], { encoding: 'utf8' });
+      const nLine = lsofOut.split('\n').find(l => l.startsWith('n'));
+      if (nLine) cwds.add(nLine.slice(1));
+    } catch {}
+  }
+  return cwds;
+}
+
 // ── Routes ──────────────────────────────────────────────────────────────────
 
 app.get('/api/info', (_req, res) => {
   const settings = loadSettings();
-  res.json({ home: HOME, claudeBin, defaultCwd: settings.defaultCwd || HOME });
+  res.json({ home: HOME, claudeBin, codexBin, codexAvailable, defaultCwd: settings.defaultCwd || HOME });
 });
 
 app.get('/api/settings', (_req, res) => {
@@ -458,6 +559,7 @@ app.get('/api/sessions', (req, res) => {
           cwd: fullCwd,
           cwdShort: shortenPath(fullCwd),
           source: 'job',
+          engine: 'claude',
           // `bg` (badge): was this ever a background agent? `bgLive`: is it a
           // background agent whose process is alive right now? Only `bgLive`
           // sessions truly can't be plain --resume'd, so only those force the modal.
@@ -513,6 +615,7 @@ app.get('/api/sessions', (req, res) => {
             cwd: fullCwd,
             cwdShort: shortenPath(fullCwd),
             source: 'history',
+            engine: 'claude',
             bg: jm.kind === 'bg' || live?.kind === 'bg' || false,
             bgLive: live?.bgLive || false,
             archived: sm.archived || false,
@@ -520,6 +623,52 @@ app.get('/api/sessions', (req, res) => {
         }
       } catch {}
     }
+  }
+
+  // Codex sessions: launch-only support originally (see README "Engines"), now
+  // also listed here so a closed/finished one is still discoverable and re-openable
+  // via `codex resume`, same as Claude's history entries.
+  for (const cs of scanCodexSessions()) {
+    if (sessions.has(cs.id)) continue; // independent UUID spaces, but don't clobber
+    const sm = meta[cs.id] || {};
+    if (sm.deleted) continue;
+    sessions.set(cs.id, {
+      id: cs.id,
+      shortId: cs.id.slice(0, 8),
+      name: sm.customName || path.basename(cs.cwd) || `Codex ${cs.id.slice(0, 8)}`,
+      customName: sm.customName || null,
+      group: sm.group || null,
+      state: 'idle', // upgraded to 'running' below if a live codex process matches
+      // Codex rollout files don't record model/effort anywhere as reliable as
+      // Claude's assistant-message field, so this only ever has a value for
+      // sessions launched through Hive (the same launchModel/launchEffort PATCH
+      // used for Claude's own id-less edge case links it in, see
+      // linkAndUpdateTerminalTitles in index.html) — null otherwise, not guessed.
+      model: sm.model || null,
+      effort: sm.effort || null,
+      lastActivity: cs.lastActivity,
+      cwd: cs.cwd,
+      cwdShort: shortenPath(cs.cwd),
+      source: 'codex',
+      engine: 'codex',
+      bg: false,
+      bgLive: false,
+      archived: sm.archived || false,
+    });
+  }
+
+  // Best-effort liveness for Codex (no registry file to read): only upgrade the
+  // MOST RECENT session per matched cwd, so several old sessions sharing a folder
+  // don't all light up "running" just because one of them currently is.
+  const liveCodexCwds = findLiveCodexCwds();
+  if (liveCodexCwds.size) {
+    const newestByCwd = new Map();
+    for (const s of sessions.values()) {
+      if (s.engine !== 'codex' || !liveCodexCwds.has(s.cwd)) continue;
+      const cur = newestByCwd.get(s.cwd);
+      if (!cur || new Date(s.lastActivity) > new Date(cur.lastActivity)) newestByCwd.set(s.cwd, s);
+    }
+    for (const s of newestByCwd.values()) s.state = 'running';
   }
 
   const list = [...sessions.values()].sort(
@@ -609,6 +758,10 @@ app.delete('/api/sessions/:id', (req, res) => {
         }
       } catch {}
     }
+  }
+  for (const cs of scanCodexSessions()) {
+    if (cs.id !== id) continue;
+    try { fs.unlinkSync(cs.path); removed = true; } catch {}
   }
   res.json({ removed });
 });
@@ -752,13 +905,23 @@ app.post('/api/open', (req, res) => {
 // ── Terminals ────────────────────────────────────────────────────────────────
 
 app.post('/api/terminal', (req, res) => {
-  const { model, effort, cwd, sessionId, sessionName, fork, agentsView } = req.body;
+  const { engine, model, effort, cwd, sessionId, sessionName, fork, agentsView } = req.body;
+  const isCodex = engine === 'codex';
+  const bin = isCodex ? codexBin : claudeBin;
   const args = [];
   let assignedSessionId = null;
 
   if (agentsView) {
     // Open the claude agents TUI — user can attach to a running agent interactively
     args.push('agents');
+  } else if (isCodex) {
+    // Codex has no --session-id equivalent: it assigns its own UUID internally
+    // and it's only discoverable afterward (via `codex resume`/`--last`), so unlike
+    // the Claude branch below we can't pre-assign or persist an id up front.
+    if (sessionId) args.push('resume', sessionId); // subcommand form, not a flag
+    if (model) args.push('--model', model);
+    // No --effort flag in Codex; reasoning effort is set via a config override.
+    if (effort) args.push('-c', `model_reasoning_effort=${effort}`);
   } else {
     if (sessionId) {
       args.push('--resume', sessionId);
@@ -782,6 +945,7 @@ app.post('/api/terminal', (req, res) => {
   // Strip session-identity vars so the child gets its own session (not the parent's).
   // CLAUDE_CODE_SESSION_ID is the main issue: child inherits the parent session ID,
   // writes to its JSONL, and shows its title. Auth uses macOS keychain — no env vars.
+  // (Codex reads its own credentials from ~/.codex — same no-env-vars assumption.)
   const env = { ...process.env };
   delete env.CLAUDE_CODE_SESSION_ID;   // child must get its own session
   delete env.CLAUDE_CODE_CHILD_SESSION; // don't mark as child — fresh session
@@ -790,7 +954,7 @@ app.post('/api/terminal', (req, res) => {
 
   let term;
   try {
-    term = pty.spawn(claudeBin, args, {
+    term = pty.spawn(bin, args, {
       name: 'xterm-256color',
       cols: 220,
       rows: 50,

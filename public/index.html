@@ -224,6 +224,7 @@
     .badge-job { background: #ddf4ff; color: var(--accent); border: 1px solid #b6e3ff; cursor: help; }
     .badge-model { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); font-family: var(--mono); font-size: 9px; }
     .badge-effort { background: #fff8c5; color: var(--orange); border: 1px solid #f5d57a; font-family: var(--mono); font-size: 9px; }
+    .badge-engine { background: #ddf4ff; color: #0969da; border: 1px solid #a8d8ff; font-family: var(--mono); font-size: 9px; }
     .badge-group { background: #eee8fd; color: var(--purple); border: 1px solid #d8b4fe; cursor: pointer; }
     .badge-group:hover { background: #e2d9fb; }
 
@@ -500,6 +501,16 @@
   <div class="modal">
     <h2>New Session</h2>
     <div class="form-row">
+      <label class="form-label">Engine</label>
+      <select class="form-ctrl" id="new-engine" onchange="onEngineChange()">
+        <option value="claude" selected>Claude Code</option>
+        <option value="codex">Codex CLI</option>
+      </select>
+      <div class="form-hint" id="codex-unavailable-hint" style="display:none">
+        <code>codex</code> not found on PATH when Hive last started. Install it, then restart Hive.
+      </div>
+    </div>
+    <div class="form-row" id="claude-model-row">
       <label class="form-label">Model</label>
       <select class="form-ctrl" id="new-model">
         <option value="claude-opus-5">claude-opus-5 — most capable</option>
@@ -509,7 +520,7 @@
         <option value="claude-fable-5">claude-fable-5</option>
       </select>
     </div>
-    <div class="form-row">
+    <div class="form-row" id="claude-effort-row">
       <label class="form-label">Effort</label>
       <select class="form-ctrl" id="new-effort">
         <option value="max">max</option>
@@ -517,6 +528,23 @@
         <option value="high">high</option>
         <option value="medium">medium</option>
         <option value="low">low</option>
+      </select>
+    </div>
+    <div class="form-row" id="codex-model-row" style="display:none">
+      <label class="form-label">Model</label>
+      <input class="form-ctrl" id="new-model-codex" type="text" value="gpt-5.6-luna" placeholder="default (~/.codex/config.toml)">
+      <div class="form-hint">Free text, not a fixed list — Codex model names change. Leave blank to use Codex's configured default.</div>
+    </div>
+    <div class="form-row" id="codex-effort-row" style="display:none">
+      <label class="form-label">Reasoning effort</label>
+      <select class="form-ctrl" id="new-effort-codex">
+        <option value="">default</option>
+        <option value="minimal">minimal</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="xhigh">xhigh</option>
+        <option value="max" selected>max</option>
       </select>
     </div>
     <div class="form-row">
@@ -607,12 +635,26 @@
   let draggingTermId = null;        // termId currently being dragged
   let prevSessionStates = new Map(); // sessionId -> state, for detecting waiting transitions
   let termWaitingSessionIds = new Set(); // session IDs whose open terminal is showing an interactive prompt
+  let termCodexWorkingIds = new Set(); // codex session IDs whose open terminal's status bar currently reads "Working" (vs "Worked for ...")
   let expandedTeams = new Set();    // lead session IDs whose team tile is expanded
 
   // Hive naming is fully decoupled from Claude's JSONL naming.
   // customName is set exclusively in Hive and never overridden by Claude.
   // s.name is a read-only fallback from the JSONL head (set once at session start).
   function displayName(s) { return s.customName || s.name; }
+
+  // Codex has no live-process registry file like Claude's, so server.js's
+  // `state` for it is a best-effort ps/lsof guess (see findLiveCodexCwds).
+  // When the pane is open in Hive right now, the terminal's own "Working" /
+  // "Worked for ..." status bar (scanned by checkTerminalWaiting below) is a
+  // strictly better signal, so it overrides — but only for open Codex sessions;
+  // Claude sessions and closed/not-Hive-tracked Codex ones are untouched.
+  function effectiveSessionState(s) {
+    if (s.engine === 'codex' && openSessionIds.has(s.id)) {
+      return termCodexWorkingIds.has(s.id) ? 'running' : 'idle';
+    }
+    return s.state;
+  }
 
   // Safe string for use inside onclick="fn('...')" attributes
   function safeAttr(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
@@ -626,11 +668,22 @@
     const buf = entry.xterm.buffer.active;
     const rows = entry.xterm.rows;
     const vp = buf.viewportY;
+    const isCodex = entry.engine === 'codex';
     let promptFound = false;
+    let workingFound = false;
     for (let r = vp + rows - 1; r >= Math.max(0, vp + rows - 8); r--) {
       const line = buf.getLine(r);
       if (!line) continue;
-      if (/esc to cancel/i.test(line.translateToString(true))) { promptFound = true; break; }
+      const text = line.translateToString(true);
+      if (!promptFound && /esc to cancel/i.test(text)) promptFound = true;
+      // Codex's status line while generating is a spinner glyph, not a box-drawing
+      // rule: "◦ Working (39s • esc to interrupt)". Only once the turn ends does it
+      // become a full-width rule: "─ Worked for 50m 33s ───...─". These are NOT the
+      // same shape, so anchor on "Working" + "esc to interrupt" co-occurring on one
+      // line (specific enough to avoid matching ordinary prose) rather than requiring
+      // a '─' character, which the active line never has. Absence of a match (not a
+      // separate "Worked for" pattern) is the idle signal, same principle as promptFound.
+      if (isCodex && !workingFound && /\bWorking\b/.test(text) && /esc to interrupt/i.test(text)) workingFound = true;
     }
     const sid = entry.sessionId;
     const wasWaiting = termWaitingSessionIds.has(sid);
@@ -644,6 +697,18 @@
       termWaitingSessionIds.delete(sid);
       renderSessions();
       refreshTerminalChip(termId, entry);
+    }
+    if (isCodex) {
+      const wasWorking = termCodexWorkingIds.has(sid);
+      if (workingFound && !wasWorking) {
+        termCodexWorkingIds.add(sid);
+        renderSessions();
+        refreshTerminalChip(termId, entry);
+      } else if (!workingFound && wasWorking) {
+        termCodexWorkingIds.delete(sid);
+        renderSessions();
+        refreshTerminalChip(termId, entry);
+      }
     }
   }
 
@@ -681,6 +746,12 @@
     defaultCwd = info.defaultCwd || info.home;
     document.getElementById('new-cwd').placeholder = defaultCwd;
     document.getElementById('settings-cwd').value = defaultCwd;
+    if (!info.codexAvailable) {
+      const codexOpt = document.querySelector('#new-engine option[value="codex"]');
+      if (codexOpt) { codexOpt.disabled = true; codexOpt.textContent += ' (not installed)'; }
+      const hint = document.getElementById('codex-unavailable-hint');
+      if (hint) hint.style.display = '';
+    }
   });
 
   loadSessions();
@@ -775,7 +846,7 @@
     if (editingSessionId !== null) return;
     const showArchived = document.getElementById('show-archived').checked;
     let visible = sessions.filter(s => showArchived || !s.archived);
-    if (activeState !== null) visible = visible.filter(s => s.state === activeState);
+    if (activeState !== null) visible = visible.filter(s => effectiveSessionState(s) === activeState);
     if (activeSource !== null) visible = visible.filter(s => s.source === activeSource);
     if (activeGroup !== null) visible = visible.filter(s => s.group === activeGroup);
 
@@ -835,7 +906,9 @@
   function renderCard(s) {
     const dname = displayName(s);
     const isOpen = openSessionIds.has(s.id);
-    const badgeState = `<span class="badge badge-${s.state}"><span class="bdot"></span>${s.state}</span>`;
+    const cardState = effectiveSessionState(s);
+    const badgeState = `<span class="badge badge-${cardState}"><span class="bdot"></span>${cardState}</span>`;
+    const badgeEngine = s.engine === 'codex' ? `<span class="badge badge-engine">codex</span>` : '';
     const badgeSrc = (s.source === 'job' || s.bg)
       ? `<span class="badge badge-job" title="Background agent — must be attached or forked, not resumed directly">agent</span>`
       : '';
@@ -856,7 +929,7 @@
     return `
       <div class="${cardCls}" id="card-${s.id}">
         ${closeBtn}
-        <div class="card-badges">${badgeState}${badgeSrc}${badgeModel}${badgeEffort}${badgeOpen}${badgeTeam}${badgeGroup}</div>
+        <div class="card-badges">${badgeState}${badgeEngine}${badgeSrc}${badgeModel}${badgeEffort}${badgeOpen}${badgeTeam}${badgeGroup}</div>
         <div class="card-name" id="cname-${s.id}" onclick="startRename('${s.id}')" title="Click to rename">${esc(dname)}</div>
         <div class="card-cwd" title="${esc(s.cwd)}">${esc(s.cwdShort || s.cwd)}</div>
         ${teamSection}
@@ -936,7 +1009,7 @@
 
     // State pills
     for (const state of STATE_ORDER) {
-      const cnt = vis.filter(s => s.state === state).length;
+      const cnt = vis.filter(s => effectiveSessionState(s) === state).length;
       if (!cnt) continue;
       // Use safeAttr — state names are simple but be consistent
       pills.push(`<span class="group-pill${activeState === state ? ' active' : ''}" onclick="setActiveState('${safeAttr(state)}')">${STATE_ICONS[state]} ${state} <span style="opacity:.65">(${cnt})</span></span>`);
@@ -1024,8 +1097,21 @@
       return;
     }
 
+    // Codex has no attach-vs-fork equivalent to the bgLive modal above, and no
+    // verified-safe way to join an already-running session. `state: 'running'`
+    // here is a best-effort ps/lsof guess (see server.js findLiveCodexCwds), not
+    // a hard fact — worth a confirm rather than either silently resuming into a
+    // possible conflict or blocking on a heuristic that might be wrong.
+    if (s.engine === 'codex' && s.state === 'running') {
+      const proceed = confirm(
+        `"${displayName(s)}" looks like it may already be running elsewhere (best-effort process check, could be wrong). Resuming here could conflict with it. Open anyway?`
+      );
+      if (!proceed) return;
+    }
+
     const sessionName = displayName(s);
     const body = {
+      engine: s.engine || 'claude',
       sessionId: s.id,
       sessionName,
       cwd: s.cwd || defaultCwd,
@@ -1043,7 +1129,7 @@
       if (error) { alert('Failed to open terminal: ' + error); return; }
       createTerminalPane(termId, {
         name: sessionName, state: s.state, model: s.model,
-        effort: s.effort, sessionId: s.id, cwd: s.cwd,
+        effort: s.effort, sessionId: s.id, cwd: s.cwd, engine: s.engine || 'claude',
       });
     } catch (err) {
       alert('Error: ' + err.message);
@@ -1195,34 +1281,53 @@
   function openNewModal() {
     document.getElementById('new-cwd').value = '';
     document.getElementById('new-cwd').placeholder = defaultCwd;
+    document.getElementById('new-engine').value = 'claude';
+    onEngineChange();
     openModal('modal-new');
   }
 
+  // Toggle between Claude's (model, effort) selects and Codex's own fields —
+  // kept as separate DOM nodes rather than swapping <option> lists in place so
+  // the existing Claude path (options, defaults, #new-model as a <select>) is
+  // untouched by adding Codex.
+  function onEngineChange() {
+    const isCodex = document.getElementById('new-engine').value === 'codex';
+    document.getElementById('claude-model-row').style.display = isCodex ? 'none' : '';
+    document.getElementById('claude-effort-row').style.display = isCodex ? 'none' : '';
+    document.getElementById('codex-model-row').style.display = isCodex ? '' : 'none';
+    document.getElementById('codex-effort-row').style.display = isCodex ? '' : 'none';
+  }
+
   async function launchNewSession() {
-    const model = document.getElementById('new-model').value;
-    const effort = document.getElementById('new-effort').value;
+    const engine = document.getElementById('new-engine').value;
+    const isCodex = engine === 'codex';
+    const model = (isCodex ? document.getElementById('new-model-codex').value : document.getElementById('new-model').value).trim();
+    const effort = isCodex ? document.getElementById('new-effort-codex').value : document.getElementById('new-effort').value;
     const cwd = document.getElementById('new-cwd').value.trim() || defaultCwd;
     closeModal('modal-new');
 
-    const label = `${shortModel(model)} / ${effort}`;
+    const label = isCodex ? `codex${model ? ' / ' + model : ''}` : `${shortModel(model)} / ${effort}`;
     try {
       const res = await fetch('/api/terminal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, effort, cwd }),
+        body: JSON.stringify({ engine, model: model || undefined, effort: effort || undefined, cwd }),
       });
       const { termId, cwd: actualCwd, sessionId: newId, error } = await res.json();
       if (error) { alert('Failed to launch: ' + error); return; }
       // The server pre-assigned the session id, so we can persist the chosen
       // model + effort right now (keyed by id) and track the terminal directly —
       // no cwd guessing, so the new terminal can't get mis-linked to another session.
+      // Codex never returns a newId (it assigns its own session UUID internally),
+      // so this persistence step is a no-op there and the pane falls back to the
+      // plain cwd+time matching already used for id-less sessions.
       if (newId) {
         fetch(`/api/sessions/${newId}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model, effort, group: activeGroup || undefined }),
         }).catch(() => {});
       }
-      createTerminalPane(termId, { name: label, model, effort, state: null, sessionId: newId || null, cwd: actualCwd });
+      createTerminalPane(termId, { name: label, model, effort, engine, state: null, sessionId: newId || null, cwd: actualCwd });
     } catch (err) {
       alert('Error: ' + err.message);
     }
@@ -1262,11 +1367,12 @@
 
   // ── Terminal panes ─────────────────────────────────────────────────────────
 
-  function terminalChipsHtml(state, model, effort) {
+  function terminalChipsHtml(state, model, effort, engine) {
     const stateChip = state ? `<span class="badge badge-${state}"><span class="bdot"></span>${state}</span>` : '';
+    const engineChip = engine === 'codex' ? `<span class="badge badge-engine">codex</span>` : '';
     const modelChip = model ? `<span class="badge badge-model">${esc(shortModel(model))}</span>` : '';
     const effortChip = effort ? `<span class="badge badge-effort">${esc(effort)}</span>` : '';
-    return `${stateChip}${modelChip}${effortChip}`;
+    return `${stateChip}${engineChip}${modelChip}${effortChip}`;
   }
 
   // The titlebar chip is only as fresh as the last call here — createTerminalPane()
@@ -1276,15 +1382,17 @@
   function refreshTerminalChip(termId, entry) {
     if (!entry.sessionId) return;
     const s = sessionMap.get(entry.sessionId);
-    const effectiveState = termWaitingSessionIds.has(entry.sessionId) ? 'waiting' : (s ? s.state : entry.state);
+    const effectiveState = termWaitingSessionIds.has(entry.sessionId) ? 'waiting'
+      : entry.engine === 'codex' ? (termCodexWorkingIds.has(entry.sessionId) ? 'running' : 'idle')
+      : (s ? s.state : entry.state);
     if (effectiveState === entry.state) return;
     entry.state = effectiveState;
     const chipsEl = document.getElementById(`tchips-${termId}`);
-    if (chipsEl) chipsEl.innerHTML = terminalChipsHtml(entry.state, entry.model, entry.effort);
+    if (chipsEl) chipsEl.innerHTML = terminalChipsHtml(entry.state, entry.model, entry.effort, entry.engine);
   }
 
   function createTerminalPane(termId, info) {
-    const { name, state, model, effort, sessionId } = info;
+    const { name, state, model, effort, sessionId, engine } = info;
 
     // Track open session
     if (sessionId) {
@@ -1299,7 +1407,7 @@
     pane.innerHTML = `
       <div class="terminal-titlebar">
         <span class="terminal-titlebar-name" id="tname-${termId}">${esc(name)}</span>
-        <div class="terminal-titlebar-chips" id="tchips-${termId}">${terminalChipsHtml(state, model, effort)}</div>
+        <div class="terminal-titlebar-chips" id="tchips-${termId}">${terminalChipsHtml(state, model, effort, engine)}</div>
         <button class="terminal-close" onclick="closeTerminal('${termId}')" title="Close">×</button>
       </div>
       <div class="terminal-body" id="tbody-${termId}"></div>`;
@@ -1348,6 +1456,7 @@
       xterm, fitAddon, ws: null, ro: null,
       sessionId: info.sessionId, fixedTitle: !!info.fixedTitle,
       name: info.name || '', model: info.model || null, effort: info.effort || null, cwd: info.cwd || null,
+      engine: info.engine || 'claude',
       state: info.state || null,
       closing: false, reconnectDelay: 500, reconnectTimer: null,
     };
@@ -1437,7 +1546,7 @@
       try { t.ws && t.ws.close(); } catch {}
       try { t.xterm.dispose(); } catch {}
       try { t.ro && t.ro.disconnect(); } catch {}
-      if (t.sessionId) { openSessionIds.delete(t.sessionId); termWaitingSessionIds.delete(t.sessionId); }
+      if (t.sessionId) { openSessionIds.delete(t.sessionId); termWaitingSessionIds.delete(t.sessionId); termCodexWorkingIds.delete(t.sessionId); }
       if (t._waitRaf) cancelAnimationFrame(t._waitRaf);
       renderSessions();
       openTerminals.delete(termId);
