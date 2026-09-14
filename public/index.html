@@ -840,10 +840,49 @@
     }
   }
 
+  // Re-rendering the session grids replaces their children. Browsers can
+  // reset the scroll container while they recalculate the new layout, which
+  // is especially visible when a Codex reply changes its running/idle state.
+  // Keep the first visible card at the same viewport offset across the
+  // rebuild, with the raw scrollTop as a fallback when that card disappears.
+  function captureSessionsPanelScroll() {
+    const panel = document.getElementById('sessions-panel');
+    if (!panel) return null;
+    const panelRect = panel.getBoundingClientRect();
+    const anchor = panel.scrollTop > 0
+      ? [...panel.querySelectorAll('.session-card')].find(card => {
+          const rect = card.getBoundingClientRect();
+          return rect.bottom > panelRect.top && rect.top < panelRect.bottom;
+        })
+      : null;
+    return {
+      top: panel.scrollTop,
+      anchorId: anchor?.id || null,
+      anchorOffset: anchor ? anchor.getBoundingClientRect().top - panelRect.top : null,
+    };
+  }
+
+  function restoreSessionsPanelScroll(snapshot) {
+    if (!snapshot) return;
+    const panel = document.getElementById('sessions-panel');
+    if (!panel) return;
+    if (snapshot.anchorId && snapshot.anchorOffset !== null) {
+      const anchor = document.getElementById(snapshot.anchorId);
+      if (anchor && panel.contains(anchor)) {
+        const panelRect = panel.getBoundingClientRect();
+        const anchorRect = anchor.getBoundingClientRect();
+        panel.scrollTop += anchorRect.top - panelRect.top - snapshot.anchorOffset;
+        return;
+      }
+    }
+    panel.scrollTop = snapshot.top;
+  }
+
   function renderSessions() {
     // Don't rebuild the grid while a name is being edited — it would destroy the
     // input element and steal focus on every 5s refresh.
     if (editingSessionId !== null) return;
+    const panelScroll = captureSessionsPanelScroll();
     const showArchived = document.getElementById('show-archived').checked;
     let visible = sessions.filter(s => showArchived || !s.archived);
     if (activeState !== null) visible = visible.filter(s => effectiveSessionState(s) === activeState);
@@ -901,6 +940,7 @@
     }
 
     renderGroupBar();
+    restoreSessionsPanelScroll(panelScroll);
   }
 
   function renderCard(s) {
