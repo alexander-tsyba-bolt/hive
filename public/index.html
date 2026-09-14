@@ -503,8 +503,8 @@
     <div class="form-row">
       <label class="form-label">Engine</label>
       <select class="form-ctrl" id="new-engine" onchange="onEngineChange()">
-        <option value="claude" selected>Claude Code</option>
-        <option value="codex">Codex CLI</option>
+        <option value="claude">Claude Code</option>
+        <option value="codex" selected>Codex CLI</option>
       </select>
       <div class="form-hint" id="codex-unavailable-hint" style="display:none">
         <code>codex</code> not found on PATH when Hive last started. Install it, then restart Hive.
@@ -532,8 +532,12 @@
     </div>
     <div class="form-row" id="codex-model-row" style="display:none">
       <label class="form-label">Model</label>
-      <input class="form-ctrl" id="new-model-codex" type="text" value="gpt-5.6-luna" placeholder="default (~/.codex/config.toml)">
-      <div class="form-hint">Free text, not a fixed list — Codex model names change. Leave blank to use Codex's configured default.</div>
+      <select class="form-ctrl" id="new-model-codex">
+        <option value="gpt-5.6-luna" selected>gpt-5.6-luna</option>
+        <option value="gpt-5.6-terra">gpt-5.6-terra</option>
+        <option value="gpt-5.6-sol">gpt-5.6-sol</option>
+        <option value="gpt-6-astra">gpt-6-astra</option>
+      </select>
     </div>
     <div class="form-row" id="codex-effort-row" style="display:none">
       <label class="form-label">Reasoning effort</label>
@@ -1321,7 +1325,9 @@
   function openNewModal() {
     document.getElementById('new-cwd').value = '';
     document.getElementById('new-cwd').placeholder = defaultCwd;
-    document.getElementById('new-engine').value = 'claude';
+    document.getElementById('new-engine').value = 'codex';
+    document.getElementById('new-model-codex').value = 'gpt-5.6-luna';
+    document.getElementById('new-effort-codex').value = 'max';
     onEngineChange();
     openModal('modal-new');
   }
