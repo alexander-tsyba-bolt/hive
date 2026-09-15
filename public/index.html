@@ -385,7 +385,7 @@
     .terminal-pane { background: var(--surface); }
     .terminal-body { flex: 1; min-height: 0; padding: 4px 6px; overflow: hidden; background: #fff; }
     .terminal-body .xterm { height: 100%; }
-    .terminal-body .xterm-viewport { overflow-y: auto !important; }
+    .terminal-body .xterm-viewport { overflow-y: auto !important; overflow-anchor: none; }
 
     /* ── State messages ── */
     .state-msg {
@@ -1558,14 +1558,24 @@
     if (isReconnect) { try { entry.xterm.reset(); } catch {} }
     ws.onopen = () => {
       entry.reconnectDelay = 500;
+      const viewport = captureTerminalViewport(entry.xterm);
       try { entry.fitAddon.fit(); ws.send(JSON.stringify({ type: 'resize', cols: entry.xterm.cols, rows: entry.xterm.rows })); } catch {}
+      restoreTerminalViewport(entry.xterm, viewport);
     };
     ws.onmessage = e => {
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === 'data') {
-          entry.xterm.write(msg.data);
-          scheduleWaitingCheck(termId, entry);
+          // write() isn't synchronous for large payloads (e.g. the full buffer replay
+          // sent on reconnect, which can be thousands of chunks for a long session) —
+          // scanning before it finishes samples a mid-replay frame, not the true final
+          // state, and can latch a stale "Working" match that nothing ever corrects
+          // once the session is genuinely idle. Scan only once this write is parsed.
+          const viewport = captureTerminalViewport(entry.xterm);
+          entry.xterm.write(msg.data, () => {
+            restoreTerminalViewport(entry.xterm, viewport);
+            scheduleWaitingCheck(termId, entry);
+          });
           maybeHandleBgAgentError(termId, msg.data);
         }
         if (msg.type === 'exit') entry.xterm.write('\r\n\x1b[2;33m[process exited]\x1b[0m\r\n');
@@ -1617,6 +1627,28 @@
     persistTerminals();
   }
 
+  function captureTerminalViewport(xterm) {
+    const buffer = xterm?.buffer?.active;
+    if (!buffer) return null;
+    const viewportY = Number(buffer.viewportY);
+    const baseY = Number(buffer.baseY);
+    if (!Number.isFinite(viewportY) || !Number.isFinite(baseY)) return null;
+    return { viewportY, atBottom: viewportY >= baseY };
+  }
+
+  function restoreTerminalViewport(xterm, snapshot) {
+    if (!xterm || !snapshot) return;
+    try {
+      if (snapshot.atBottom) {
+        xterm.scrollToBottom();
+        return;
+      }
+      const baseY = Number(xterm.buffer.active.baseY);
+      const maxY = Number.isFinite(baseY) ? baseY : snapshot.viewportY;
+      xterm.scrollToLine(Math.max(0, Math.min(snapshot.viewportY, maxY)));
+    } catch {}
+  }
+
   // Debounced fit (one per animation frame, so it lands AFTER a layout transition
   // settles instead of on intermediate sizes) that also resyncs the PTY width.
   // xterm.onResize only fires when the size CHANGES, so a fit that lands on the same
@@ -1629,6 +1661,7 @@
     if (entry._fitRaf) cancelAnimationFrame(entry._fitRaf);
     entry._fitRaf = requestAnimationFrame(() => {
       entry._fitRaf = null;
+      const viewport = captureTerminalViewport(entry.xterm);
       try {
         entry.fitAddon.fit();
         const ws = entry.ws;
@@ -1636,6 +1669,7 @@
           ws.send(JSON.stringify({ type: 'resize', cols: entry.xterm.cols, rows: entry.xterm.rows }));
         }
       } catch {}
+      restoreTerminalViewport(entry.xterm, viewport);
     });
   }
 
