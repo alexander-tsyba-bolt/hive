@@ -147,7 +147,7 @@
     .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 
     /* ── Sessions panel ── */
-    .sessions-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+    .sessions-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; overflow-anchor: none; }
 
     /* ── Side-by-side layout when terminals are open ── */
     .main.layout-split { flex-direction: row; }
@@ -637,6 +637,7 @@
   let termWaitingSessionIds = new Set(); // session IDs whose open terminal is showing an interactive prompt
   let termCodexWorkingIds = new Set(); // codex session IDs whose open terminal's status bar currently reads "Working" (vs "Worked for ...")
   let expandedTeams = new Set();    // lead session IDs whose team tile is expanded
+  let sessionRenderRevision = 0;    // invalidates deferred scroll restores from an older render
 
   // Hive naming is fully decoupled from Claude's JSONL naming.
   // customName is set exclusively in Hive and never overridden by Claude.
@@ -862,20 +863,28 @@
     };
   }
 
-  function restoreSessionsPanelScroll(snapshot) {
+  function restoreSessionsPanelScroll(snapshot, revision) {
     if (!snapshot) return;
     const panel = document.getElementById('sessions-panel');
     if (!panel) return;
-    if (snapshot.anchorId && snapshot.anchorOffset !== null) {
-      const anchor = document.getElementById(snapshot.anchorId);
-      if (anchor && panel.contains(anchor)) {
-        const panelRect = panel.getBoundingClientRect();
-        const anchorRect = anchor.getBoundingClientRect();
-        panel.scrollTop += anchorRect.top - panelRect.top - snapshot.anchorOffset;
-        return;
+    const restore = () => {
+      if (snapshot.anchorId && snapshot.anchorOffset !== null) {
+        const anchor = document.getElementById(snapshot.anchorId);
+        if (anchor && panel.contains(anchor)) {
+          const panelRect = panel.getBoundingClientRect();
+          const anchorRect = anchor.getBoundingClientRect();
+          panel.scrollTop += anchorRect.top - panelRect.top - snapshot.anchorOffset;
+          return;
+        }
       }
-    }
-    panel.scrollTop = snapshot.top;
+      panel.scrollTop = snapshot.top;
+    };
+    restore();
+    // The grid and sticky filter bar can settle one frame after innerHTML changes.
+    // Reapply the same anchor only if no newer render has superseded this one.
+    requestAnimationFrame(() => {
+      if (sessionRenderRevision === revision) restore();
+    });
   }
 
   function renderSessions() {
@@ -883,6 +892,7 @@
     // input element and steal focus on every 5s refresh.
     if (editingSessionId !== null) return;
     const panelScroll = captureSessionsPanelScroll();
+    const renderRevision = ++sessionRenderRevision;
     const showArchived = document.getElementById('show-archived').checked;
     let visible = sessions.filter(s => showArchived || !s.archived);
     if (activeState !== null) visible = visible.filter(s => effectiveSessionState(s) === activeState);
@@ -940,7 +950,7 @@
     }
 
     renderGroupBar();
-    restoreSessionsPanelScroll(panelScroll);
+    restoreSessionsPanelScroll(panelScroll, renderRevision);
   }
 
   function renderCard(s) {
@@ -1124,7 +1134,7 @@
     // those genuinely can't be plain --resume'd. Everything else (finished agents,
     // ordinary sessions) just opens. Any live straggler we missed is caught by
     // maybeHandleBgAgentError when the resume errors.
-    if (s.bgLive) {
+    if (s.engine !== 'codex' && s.bgLive) {
       pendingAgentOpen = s;
       document.getElementById('agent-modal-msg').textContent =
         `"${displayName(s)}" is currently running as a background agent.`;
@@ -1529,6 +1539,25 @@
       if (entry.ws && entry.ws.readyState === WebSocket.OPEN) entry.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
     });
 
+    // A browser terminal receives Cmd+V as a DOM paste event, not as the
+    // Ctrl+Option+V sequence that Codex uses to read an image from macOS's
+    // clipboard. Intercept image-only pastes before xterm turns them into text;
+    // leave text pastes on xterm's normal path.
+    document.getElementById(`tbody-${termId}`).addEventListener('paste', event => {
+      const clipboard = event.clipboardData;
+      const hasImage = [...(clipboard?.items || [])].some(item =>
+        item.kind === 'file' && item.type.startsWith('image/')
+      );
+      if (entry.engine !== 'codex' || !hasImage) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
+        // ESC prefixes Ctrl+V as Alt/Option in a terminal, which Codex maps to
+        // its native clipboard-image attachment action.
+        entry.ws.send(JSON.stringify({ type: 'input', data: '\x1b\x16' }));
+      }
+    }, true);
+
     const ro = new ResizeObserver(() => scheduleFit(entry));
     ro.observe(document.getElementById(`tbody-${termId}`));
     entry.ro = ro;
@@ -1734,7 +1763,9 @@
   // attach/fork modal regardless of how the session was classified at open time.
   function maybeHandleBgAgentError(termId, chunk) {
     const t = openTerminals.get(termId);
-    if (!t || t.bgHandled) return;
+    // This diagnostic belongs to Claude's background-agent protocol. Codex can
+    // reproduce the words in ordinary terminal output, but has no attach/fork UI.
+    if (!t || t.engine === 'codex' || t.bgHandled) return;
     t.recentText = ((t.recentText || '') + chunk).slice(-3000);
     if (!/currently running as a background agent|--fork-session to branch off/i.test(t.recentText)) return;
     t.bgHandled = true;
