@@ -797,8 +797,17 @@
   // and update terminal titlebars whenever a session name changes.
   function linkAndUpdateTerminalTitles() {
     const sessionById = new Map(sessions.map(s => [s.id, s]));
+    let terminalMetadataChanged = false;
 
     for (const [termId, t] of openTerminals) {
+      // Older saved-pane records did not include engine. Repair them from the
+      // session API so a restored Codex pane gets its Codex-only paste behavior.
+      const knownSession = t.sessionId ? sessionById.get(t.sessionId) : null;
+      if (knownSession?.engine && t.engine !== knownSession.engine) {
+        t.engine = knownSession.engine;
+        terminalMetadataChanged = true;
+        refreshTerminalChip(termId, t);
+      }
       // Link pending terminals (new sessions with unknown ID at launch time)
       if (!t.sessionId && t.pendingCwd !== undefined) {
         const candidate = sessions.find(s =>
@@ -839,6 +848,7 @@
       // card, which fully re-renders each time. Keep both in sync.
       if (t.sessionId) refreshTerminalChip(termId, t);
     }
+    if (terminalMetadataChanged) persistTerminals();
   }
 
   // Re-rendering the session grids replaces their children. Browsers can
@@ -1531,6 +1541,27 @@
       entry.launchEffort = info.effort || null;
     }
 
+    // A new or restored pane should follow new output. Do not infer a manual
+    // scroll from a buffer resize or a partial WebSocket replay: those can put
+    // xterm temporarily above its base line before the write callback runs.
+    entry.followOutput = true;
+
+    const body = document.getElementById(`tbody-${termId}`);
+    const updateFollowAfterUserScroll = () => {
+      requestAnimationFrame(() => {
+        const buffer = entry.xterm?.buffer?.active;
+        if (buffer) entry.followOutput = buffer.viewportY >= buffer.baseY;
+      });
+    };
+    const viewport = body.querySelector('.xterm-viewport');
+    viewport?.addEventListener('wheel', updateFollowAfterUserScroll, { passive: true });
+    viewport?.addEventListener('pointerdown', updateFollowAfterUserScroll, true);
+    viewport?.addEventListener('pointerup', updateFollowAfterUserScroll, true);
+    viewport?.addEventListener('touchend', updateFollowAfterUserScroll, true);
+    xterm.onKey(({ domEvent }) => {
+      if (['PageUp', 'PageDown', 'Home', 'End'].includes(domEvent.key)) updateFollowAfterUserScroll();
+    });
+
     // Input/resize use whatever socket is current, so they survive reconnects.
     xterm.onData(data => {
       if (entry.ws && entry.ws.readyState === WebSocket.OPEN) entry.ws.send(JSON.stringify({ type: 'input', data }));
@@ -1539,27 +1570,8 @@
       if (entry.ws && entry.ws.readyState === WebSocket.OPEN) entry.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
     });
 
-    // A browser terminal receives Cmd+V as a DOM paste event, not as the
-    // Ctrl+Option+V sequence that Codex uses to read an image from macOS's
-    // clipboard. Intercept image-only pastes before xterm turns them into text;
-    // leave text pastes on xterm's normal path.
-    document.getElementById(`tbody-${termId}`).addEventListener('paste', event => {
-      const clipboard = event.clipboardData;
-      const hasImage = [...(clipboard?.items || [])].some(item =>
-        item.kind === 'file' && item.type.startsWith('image/')
-      );
-      if (entry.engine !== 'codex' || !hasImage) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
-        // ESC prefixes Ctrl+V as Alt/Option in a terminal, which Codex maps to
-        // its native clipboard-image attachment action.
-        entry.ws.send(JSON.stringify({ type: 'input', data: '\x1b\x16' }));
-      }
-    }, true);
-
     const ro = new ResizeObserver(() => scheduleFit(entry));
-    ro.observe(document.getElementById(`tbody-${termId}`));
+    ro.observe(body);
     entry.ro = ro;
 
     openTerminals.set(termId, entry);
@@ -1583,7 +1595,7 @@
     if (isReconnect) { try { entry.xterm.reset(); } catch {} }
     ws.onopen = () => {
       entry.reconnectDelay = 500;
-      const viewport = captureTerminalViewport(entry.xterm);
+      const viewport = captureTerminalViewport(entry);
       try { entry.fitAddon.fit(); ws.send(JSON.stringify({ type: 'resize', cols: entry.xterm.cols, rows: entry.xterm.rows })); } catch {}
       restoreTerminalViewport(entry.xterm, viewport);
     };
@@ -1596,7 +1608,7 @@
           // scanning before it finishes samples a mid-replay frame, not the true final
           // state, and can latch a stale "Working" match that nothing ever corrects
           // once the session is genuinely idle. Scan only once this write is parsed.
-          const viewport = captureTerminalViewport(entry.xterm);
+          const viewport = captureTerminalViewport(entry);
           entry.xterm.write(msg.data, () => {
             restoreTerminalViewport(entry.xterm, viewport);
             scheduleWaitingCheck(termId, entry);
@@ -1652,13 +1664,14 @@
     persistTerminals();
   }
 
-  function captureTerminalViewport(xterm) {
+  function captureTerminalViewport(entry) {
+    const xterm = entry?.xterm;
     const buffer = xterm?.buffer?.active;
     if (!buffer) return null;
     const viewportY = Number(buffer.viewportY);
     const baseY = Number(buffer.baseY);
     if (!Number.isFinite(viewportY) || !Number.isFinite(baseY)) return null;
-    return { viewportY, atBottom: viewportY >= baseY };
+    return { viewportY, atBottom: entry.followOutput !== false };
   }
 
   function restoreTerminalViewport(xterm, snapshot) {
@@ -1686,7 +1699,7 @@
     if (entry._fitRaf) cancelAnimationFrame(entry._fitRaf);
     entry._fitRaf = requestAnimationFrame(() => {
       entry._fitRaf = null;
-      const viewport = captureTerminalViewport(entry.xterm);
+      const viewport = captureTerminalViewport(entry);
       try {
         entry.fitAddon.fit();
         const ws = entry.ws;
@@ -1902,6 +1915,35 @@
     persistTerminals();
   }
 
+  function clipboardHasImage(clipboard) {
+    const isImageFile = file =>
+      /^image\//i.test(file?.type || '') || /\.(avif|gif|heic|jpeg|jpg|png|webp)$/i.test(file?.name || '');
+    return [...(clipboard?.items || [])].some(item =>
+      item.kind === 'file' && (isImageFile(item.getAsFile?.()) || /^image\//i.test(item.type || ''))
+    ) || [...(clipboard?.files || [])].some(isImageFile) || [...(clipboard?.types || [])].some(type => /^image\//i.test(type));
+  }
+
+  // Cmd+V and Edit → Paste both produce a browser paste event. Listen on the
+  // document in capture phase so the behavior is independent of xterm's
+  // internal textarea target.
+  document.addEventListener('paste', event => {
+    const target = event.target;
+    const active = document.activeElement;
+    const body = target?.closest?.('.terminal-body') || active?.closest?.('.terminal-body');
+    if (!body || !clipboardHasImage(event.clipboardData)) return;
+    const termId = body.id.replace('tbody-', '');
+    const entry = openTerminals.get(termId);
+    if (!entry || entry.engine !== 'codex') return;
+    event.preventDefault();
+    event.stopPropagation();
+    try { entry.xterm.focus(); } catch {}
+    if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
+      // Codex 0.154 handles Ctrl+V itself as a native image-paste action.
+      // Do not add Escape: that changes the input into a different key chord.
+      entry.ws.send(JSON.stringify({ type: 'input', data: '\x16' }));
+    }
+  }, true);
+
   // ── Click-to-open links (capture phase, pixel→cell) ─────────────────────────
   // URLs are opened synchronously (preserves the user gesture for window.open).
   // File/dir paths are resolved by the SERVER against the real filesystem, which
@@ -2003,6 +2045,7 @@
         return {
           termId, sessionId: t.sessionId || null, name: t.name || '',
           model: t.model || null, effort: t.effort || null, cwd: t.cwd || null,
+          engine: t.engine || 'claude',
           fixedTitle: !!t.fixedTitle,
         };
       }).filter(Boolean);
@@ -2020,7 +2063,7 @@
       // longer has it (restarted), connectTerminalWS gets a 4004 and cleans up.
       createTerminalPane(s.termId, {
         name: s.name, model: s.model, effort: s.effort, cwd: s.cwd,
-        sessionId: s.sessionId, fixedTitle: s.fixedTitle, state: null,
+        sessionId: s.sessionId, fixedTitle: s.fixedTitle, engine: s.engine || 'claude', state: null,
       });
     }
   }
