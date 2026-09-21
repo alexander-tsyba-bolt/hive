@@ -95,6 +95,19 @@ test('a cancellable operation without an input control does not notify', () => {
   assert.equal(context.termWaitingSessionIds.has('session'), false);
 });
 
+test('automatic Codex approval review stays working and suppresses its transient prompt', () => {
+  const { context, notifications } = createNotificationController();
+  const entry = createEntry('Reviewing approval request (21s · esc to interrupt)', 'codex');
+
+  context.checkTerminalWaiting('term', entry);
+  entry.lineTexts = ['Enter to confirm · Esc to cancel'];
+  context.checkTerminalWaiting('term', entry);
+
+  assert.equal(context.termCodexWorkingIds.has('session'), true);
+  assert.equal(entry._automaticReviewInProgress, true);
+  assert.deepEqual(notifications, []);
+});
+
 test('a stable reply completion produces one ready notification', () => {
   const { context, notifications, timers } = createNotificationController();
   const entry = createEntry('Thinking (2s, esc to interrupt)');

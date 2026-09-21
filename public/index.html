@@ -724,13 +724,14 @@
   // Read only the live terminal rows. This avoids matching old status text when
   // the reader has scrolled up and gives notification logic one shared signal.
   function readTerminalSignals(entry) {
-    if (!entry.xterm) return { promptFound: false, workingFound: false, completionSignatures: [] };
+    if (!entry.xterm) return { promptFound: false, workingFound: false, automaticReviewFound: false, completionSignatures: [] };
     const buf = entry.xterm.buffer.active;
     const rows = entry.xterm.rows;
     // The live prompt/status lives at the bottom of the terminal buffer. Using
     // viewportY makes a user scrolling up look like Codex has finished its turn.
     const liveTop = Math.max(0, Number(buf.baseY) || 0);
     let workingFound = false;
+    let automaticReviewFound = false;
     const liveLines = [];
     for (let r = liveTop + rows - 1; r >= Math.max(0, liveTop + rows - 8); r--) {
       const line = buf.getLine(r);
@@ -740,8 +741,11 @@
       // Both clients expose "esc to interrupt" only while a reply is active.
       // Codex also needs "Working" on the same row so ordinary terminal output
       // cannot imitate its status line.
+      if (/\bReviewing approval request\b/i.test(text) && /esc to interrupt/i.test(text)) {
+        automaticReviewFound = true;
+      }
       if (!workingFound && /esc to interrupt/i.test(text)
-        && (entry.engine !== 'codex' || /\bWorking\b/.test(text))) workingFound = true;
+        && (entry.engine !== 'codex' || /\b(?:Working|Reviewing approval request)\b/i.test(text))) workingFound = true;
     }
     const liveText = liveLines.join('\n');
     const hasCancelControl = /esc to cancel/i.test(liveText);
@@ -759,7 +763,7 @@
       const match = line.translateToString(true).match(/^\s*[─━]+\s*Worked for\s+(?:\d+\s*[dhms]\s*)+/i);
       if (match) completionSignatures.add(match[0].toLowerCase().replace(/\s+/g, ' ').trim());
     }
-    return { promptFound, workingFound, completionSignatures: [...completionSignatures] };
+    return { promptFound, workingFound, automaticReviewFound, completionSignatures: [...completionSignatures] };
   }
 
   // Scan the rendered buffer after each parsed write. UI state can react at once,
@@ -767,9 +771,10 @@
   // prevents xterm redraws from turning one prompt into repeated macOS alerts.
   function checkTerminalWaiting(termId, entry) {
     if (!entry.sessionId || !entry.xterm) return;
-    const { promptFound, workingFound, completionSignatures } = readTerminalSignals(entry);
+    const { promptFound, workingFound, automaticReviewFound, completionSignatures } = readTerminalSignals(entry);
     const isCodex = entry.engine === 'codex';
     const sid = entry.sessionId;
+    if (automaticReviewFound) entry._automaticReviewInProgress = true;
     const wasWaiting = termWaitingSessionIds.has(sid);
     if (promptFound && !wasWaiting) {
       termWaitingSessionIds.add(sid);
@@ -786,7 +791,7 @@
         clearTimeout(entry._attentionClearTimer);
         entry._attentionClearTimer = null;
       }
-      if (!entry._attentionNotificationLatched) {
+      if (!entry._automaticReviewInProgress && !entry._attentionNotificationLatched) {
         entry._attentionNotificationLatched = true;
         const s = sessionMap.get(sid);
         if (s) fireTerminalNotification(termId, s, entry, 'attention');
@@ -819,6 +824,7 @@
           if (entry.closing || current.workingFound) return;
           if (isCodex && !current.completionSignatures.some(signature => !baseline.has(signature))) return;
           entry._turnWasWorking = false;
+          entry._automaticReviewInProgress = false;
           entry._codexCompletionBaseline = null;
           if (isCodex) {
             termCodexWorkingIds.delete(sid);
@@ -1967,6 +1973,7 @@
 
     // Input/resize use whatever socket is current, so they survive reconnects.
     xterm.onData(data => {
+      entry._automaticReviewInProgress = false;
       if (entry.ws && entry.ws.readyState === WebSocket.OPEN) entry.ws.send(JSON.stringify({ type: 'input', data }));
     });
     xterm.onResize(({ cols, rows }) => {
