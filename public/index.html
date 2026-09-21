@@ -729,19 +729,24 @@
     // The live prompt/status lives at the bottom of the terminal buffer. Using
     // viewportY makes a user scrolling up look like Codex has finished its turn.
     const liveTop = Math.max(0, Number(buf.baseY) || 0);
-    let promptFound = false;
     let workingFound = false;
+    const liveLines = [];
     for (let r = liveTop + rows - 1; r >= Math.max(0, liveTop + rows - 8); r--) {
       const line = buf.getLine(r);
       if (!line) continue;
       const text = line.translateToString(true);
-      if (!promptFound && /esc to cancel/i.test(text)) promptFound = true;
+      liveLines.push(text);
       // Both clients expose "esc to interrupt" only while a reply is active.
       // Codex also needs "Working" on the same row so ordinary terminal output
       // cannot imitate its status line.
       if (!workingFound && /esc to interrupt/i.test(text)
         && (entry.engine !== 'codex' || /\bWorking\b/.test(text))) workingFound = true;
     }
+    const liveText = liveLines.join('\n');
+    const hasCancelControl = /esc to cancel/i.test(liveText);
+    const hasInputControl = /(?:enter|return)\s+to\s+(?:select|confirm|submit|continue)|tab\s+to\s+amend|press\s+(?:enter|return)\s+to\s+(?:select|confirm|submit|continue)/i.test(liveText);
+    const hasExplicitQuestion = /\b(?:do you want to|would you like to|allow this|approve this)\b/i.test(liveText);
+    const promptFound = hasCancelControl && (hasInputControl || hasExplicitQuestion);
     return { promptFound, workingFound };
   }
 

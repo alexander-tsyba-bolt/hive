@@ -69,16 +69,26 @@ function createEntry(text = '') {
 
 test('one interactive prompt produces one notification across a redraw flicker', () => {
   const { context, notifications, timers } = createNotificationController();
-  const entry = createEntry('Esc to cancel');
+  const entry = createEntry('Enter to select · Esc to cancel');
 
   context.checkTerminalWaiting('term', entry);
   entry.lineText = '';
   context.checkTerminalWaiting('term', entry);
-  entry.lineText = 'Esc to cancel';
+  entry.lineText = 'Enter to select · Esc to cancel';
   context.checkTerminalWaiting('term', entry);
 
   assert.deepEqual(notifications, ['attention']);
   assert.equal(timers.size, 0);
+});
+
+test('a cancellable operation without an input control does not notify', () => {
+  const { context, notifications } = createNotificationController();
+  const entry = createEntry('Running task · Esc to cancel');
+
+  context.checkTerminalWaiting('term', entry);
+
+  assert.deepEqual(notifications, []);
+  assert.equal(context.termWaitingSessionIds.has('session'), false);
 });
 
 test('a stable reply completion produces one ready notification', () => {
