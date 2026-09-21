@@ -43,6 +43,7 @@ function createController({ deferFrames = false } = {}) {
     'terminalPaneHasFocus',
     'terminalIsAtBottom',
     'holdTerminalViewport',
+    'installTerminalViewportController',
     'captureTerminalViewport',
     'restoreTerminalViewport',
     'scrollTerminalToReplyIfUnfocused',
@@ -121,6 +122,38 @@ test('starting a manual scroll releases bottom mode synchronously', () => {
   assert.equal(entry.viewportMode, 'held');
   assert.equal(entry.viewportRevision, 1);
   assert.equal(snapshot.wasAtBottom, false);
+});
+
+test('wheel events over the terminal body enter held mode before output can arrive', () => {
+  const controller = createController({ deferFrames: true });
+  const { entry } = createEntry(100, 100);
+  const listeners = new Map();
+  const body = {
+    addEventListener: (type, callback) => listeners.set(type, callback),
+  };
+  entry.xterm.onKey = () => {};
+
+  controller.installTerminalViewportController('term', entry, body, entry.xterm);
+  listeners.get('wheel')();
+
+  assert.equal(entry.viewportMode, 'held');
+  assert.equal(entry.viewportRevision, 1);
+  entry.xterm.buffer.active.viewportY = 80;
+  controller.flushFrames();
+  assert.equal(entry.viewportMode, 'held');
+});
+
+test('an invalidated marker falls back to the absolute row, not the moving bottom', () => {
+  const controller = createController();
+  const { entry, calls, marker } = createEntry(40, 100);
+  const snapshot = controller.captureTerminalViewport(entry);
+
+  marker.line = -1;
+  entry.xterm.buffer.active.baseY = 180;
+  controller.restoreTerminalViewport(entry, snapshot);
+
+  assert.equal(entry.viewportMode, 'held');
+  assert.deepEqual(calls.at(-1), ['line', 40]);
 });
 
 test('reply completion moves only an unfocused pane to the bottom', () => {

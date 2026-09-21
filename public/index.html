@@ -1950,37 +1950,7 @@
     }
 
     const body = document.getElementById(`tbody-${termId}`);
-    const viewport = body.querySelector('.xterm-viewport');
-
-    // Only direct reader actions change viewport intent. Programmatic scrolls,
-    // terminal output, and xterm reflow must not turn a bottom pane into a held
-    // pane or release a manually held pane.
-    const beginViewportInteraction = () => {
-      activeTerminalReaderId = termId;
-      // Change intent synchronously. Waiting for the next animation frame leaves
-      // a race where a Codex write can still observe `bottom` and pull the reader
-      // down before the browser reports the new viewport position.
-      holdTerminalViewport(entry);
-      if (entry._viewportIntentRaf) cancelAnimationFrame(entry._viewportIntentRaf);
-    };
-    const settleViewportIntent = () => {
-      beginViewportInteraction();
-      entry._viewportIntentRaf = requestAnimationFrame(() => {
-        entry._viewportIntentRaf = null;
-        if (entry.closing) return;
-        entry.viewportMode = terminalIsAtBottom(entry) ? 'bottom' : 'held';
-      });
-    };
-    viewport?.addEventListener('wheel', settleViewportIntent, { passive: true });
-    viewport?.addEventListener('pointerdown', beginViewportInteraction, true);
-    viewport?.addEventListener('pointerup', settleViewportIntent, true);
-    viewport?.addEventListener('touchstart', beginViewportInteraction, { passive: true });
-    viewport?.addEventListener('touchend', settleViewportIntent, true);
-    xterm.onKey(({ domEvent }) => {
-      activeTerminalReaderId = termId;
-      if (['PageUp', 'PageDown', 'Home', 'End'].includes(domEvent.key)) settleViewportIntent();
-    });
-    body.addEventListener('focusin', () => { activeTerminalReaderId = termId; });
+    installTerminalViewportController(termId, entry, body, xterm);
 
     // If a bottom pane loses focus, re-pin it after the browser finishes its
     // focus work. A held pane is deliberately left untouched until Codex ends
@@ -2129,6 +2099,35 @@
     entry.viewportMode = 'held';
   }
 
+  function installTerminalViewportController(termId, entry, body, xterm) {
+    // xterm's screen and scrollbar are sibling elements. Listen on their common
+    // terminal body so a wheel over the text is captured, not only a wheel over
+    // the narrow scrollbar gutter.
+    const beginViewportInteraction = () => {
+      activeTerminalReaderId = termId;
+      holdTerminalViewport(entry);
+      if (entry._viewportIntentRaf) cancelAnimationFrame(entry._viewportIntentRaf);
+    };
+    const settleViewportIntent = () => {
+      beginViewportInteraction();
+      entry._viewportIntentRaf = requestAnimationFrame(() => {
+        entry._viewportIntentRaf = null;
+        if (entry.closing) return;
+        entry.viewportMode = terminalIsAtBottom(entry) ? 'bottom' : 'held';
+      });
+    };
+    body.addEventListener('wheel', settleViewportIntent, { passive: true, capture: true });
+    body.addEventListener('pointerdown', beginViewportInteraction, true);
+    body.addEventListener('pointerup', settleViewportIntent, true);
+    body.addEventListener('touchstart', beginViewportInteraction, { passive: true, capture: true });
+    body.addEventListener('touchend', settleViewportIntent, true);
+    body.addEventListener('focusin', () => { activeTerminalReaderId = termId; });
+    xterm.onKey(({ domEvent }) => {
+      activeTerminalReaderId = termId;
+      if (['PageUp', 'PageDown', 'Home', 'End'].includes(domEvent.key)) settleViewportIntent();
+    });
+  }
+
   function captureTerminalViewport(entry) {
     const xterm = entry?.xterm;
     const buffer = xterm?.buffer?.active;
@@ -2151,7 +2150,6 @@
       wasAtBottom: false,
       marker,
       viewportY,
-      distanceFromBottom: Math.max(0, baseY - viewportY),
       revision: entry.viewportRevision,
     };
   }
@@ -2171,10 +2169,12 @@
       entry.viewportMode = 'held';
       const baseY = Number(xterm.buffer.active.baseY);
       const markerLine = Number(snapshot.marker?.line);
-      const fallbackLine = Number.isFinite(baseY)
-        ? baseY - snapshot.distanceFromBottom
+      // Never fall back to distance-from-bottom. If xterm invalidates a marker,
+      // that fallback moves the reader down as output grows. An absolute row can
+      // be imperfect after reflow, but it cannot chase new output.
+      const targetLine = Number.isFinite(markerLine) && markerLine >= 0
+        ? markerLine
         : snapshot.viewportY;
-      const targetLine = Number.isFinite(markerLine) && markerLine >= 0 ? markerLine : fallbackLine;
       const maxY = Number.isFinite(baseY) ? baseY : targetLine;
       xterm.scrollToLine(Math.max(0, Math.min(targetLine, maxY)));
     } catch {
