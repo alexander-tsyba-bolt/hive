@@ -160,6 +160,7 @@ Hive can spawn two CLIs into the same terminal grid, picked per-session from the
 
 - **Claude Code** (`claude`) — full support: sessions grid, resume, fork, live state badges, agent teams.
 - **Codex CLI** (`codex`) — picking a working directory and hitting Launch opens a real `codex` process in that folder, with optional model and reasoning-effort overrides (defaults to `gpt-5.6-luna` / `max`, both editable). The Codex option is disabled in the dropdown if `codex` wasn't found on `PATH` when Hive started. Codex sessions also appear in the sessions grid (tagged with a `codex` badge), reusing the same rename/group/archive/delete as Claude sessions.
+- **Terminal**: the header's **⌘ Terminal** button opens the user's login shell immediately in the configured default directory. It starts neither Claude Code nor Codex and does not create a Hive session record.
 
 What's different from Claude, by design: Codex has no live-process registry file to read (`~/.claude/sessions/*.json` has no equivalent), so `running`/`idle` comes from two layered signals depending on whether the pane is open in Hive right now:
 

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "test": "node --test tests/*.test.js",
     "start": "node server.js",
     "postinstall": "node -e \"const fs=require('fs'),path=require('path'),h=path.join(__dirname,'node_modules/node-pty/prebuilds',process.platform+'-'+process.arch,'spawn-helper');if(fs.existsSync(h)){fs.chmodSync(h,0o755);console.log('Fixed spawn-helper +x');}\""
   },
