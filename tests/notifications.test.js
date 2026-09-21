@@ -23,6 +23,7 @@ function functionSource(name) {
 function createNotificationController() {
   const timers = new Map();
   const notifications = [];
+  const scrolls = [];
   let nextTimer = 1;
   const context = {
     termWaitingSessionIds: new Set(),
@@ -30,7 +31,7 @@ function createNotificationController() {
     sessionMap: new Map([['session', { id: 'session', name: 'Test session' }]]),
     renderSessions: () => {},
     refreshTerminalChip: () => {},
-    scrollTerminalToReplyIfUnfocused: () => {},
+    scrollTerminalToReplyIfUnfocused: (...args) => scrolls.push(args),
     fireTerminalNotification: (...args) => notifications.push(args.at(-1)),
     setTimeout: callback => {
       const id = nextTimer++;
@@ -43,24 +44,27 @@ function createNotificationController() {
   for (const name of ['readTerminalSignals', 'checkTerminalWaiting']) {
     vm.runInContext(functionSource(name), context);
   }
-  return { context, notifications, timers };
+  return { context, notifications, scrolls, timers };
 }
 
-function createEntry(text = '') {
+function createEntry(text = '', engine = 'claude') {
   const entry = {
-    engine: 'claude',
+    engine,
     sessionId: 'session',
     closing: false,
-    lineText: text,
+    lineTexts: Array.isArray(text) ? text : [text],
   };
   entry.xterm = {
     rows: 8,
     buffer: {
       active: {
         baseY: 0,
-        getLine: row => row === 7
-          ? { translateToString: () => entry.lineText }
-          : null,
+        getLine: row => {
+          const index = row - (8 - entry.lineTexts.length);
+          return index >= 0 && index < entry.lineTexts.length
+            ? { translateToString: () => entry.lineTexts[index] }
+            : null;
+        },
       },
     },
   };
@@ -72,9 +76,9 @@ test('one interactive prompt produces one notification across a redraw flicker',
   const entry = createEntry('Enter to select · Esc to cancel');
 
   context.checkTerminalWaiting('term', entry);
-  entry.lineText = '';
+  entry.lineTexts = [''];
   context.checkTerminalWaiting('term', entry);
-  entry.lineText = 'Enter to select · Esc to cancel';
+  entry.lineTexts = ['Enter to select · Esc to cancel'];
   context.checkTerminalWaiting('term', entry);
 
   assert.deepEqual(notifications, ['attention']);
@@ -96,11 +100,46 @@ test('a stable reply completion produces one ready notification', () => {
   const entry = createEntry('Thinking (2s, esc to interrupt)');
 
   context.checkTerminalWaiting('term', entry);
-  entry.lineText = 'Reply complete';
+  entry.lineTexts = ['Reply complete'];
   context.checkTerminalWaiting('term', entry);
   assert.equal(timers.size, 1);
   [...timers.values()][0]();
 
+  assert.deepEqual(notifications, ['ready']);
+});
+
+test('a missing Codex Working row is not reply completion', () => {
+  const { context, notifications, scrolls, timers } = createNotificationController();
+  const entry = createEntry([
+    '─ Worked for 4s ─────────',
+    'Working (2s · esc to interrupt)',
+  ], 'codex');
+
+  context.checkTerminalWaiting('term', entry);
+  entry.lineTexts = ['─ Worked for 4s ─────────', 'Redrawing status'];
+  context.checkTerminalWaiting('term', entry);
+
+  assert.equal(timers.size, 0);
+  assert.equal(context.termCodexWorkingIds.has('session'), true);
+  assert.deepEqual(scrolls, []);
+  assert.deepEqual(notifications, []);
+});
+
+test('a new Codex Worked for marker completes the current reply', () => {
+  const { context, notifications, scrolls, timers } = createNotificationController();
+  const entry = createEntry([
+    '─ Worked for 4s ─────────',
+    'Working (2s · esc to interrupt)',
+  ], 'codex');
+
+  context.checkTerminalWaiting('term', entry);
+  entry.lineTexts = ['─ Worked for 4s ─────────', '─ Worked for 9s ─────────'];
+  context.checkTerminalWaiting('term', entry);
+  assert.equal(timers.size, 1);
+  [...timers.values()][0]();
+
+  assert.equal(context.termCodexWorkingIds.has('session'), false);
+  assert.equal(scrolls.length, 1);
   assert.deepEqual(notifications, ['ready']);
 });
 

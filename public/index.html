@@ -680,6 +680,7 @@
   let editingSessionId = null;      // session id whose name is being edited inline
   let terminalOrder = [];           // termIds in grid display order (drag-reorderable)
   let draggingTermId = null;        // termId currently being dragged
+  let activeTerminalReaderId = null; // pane most recently selected by keyboard, pointer, touch, or wheel
   let termWaitingSessionIds = new Set(); // session IDs whose open terminal is showing an interactive prompt
   let termCodexWorkingIds = new Set(); // codex session IDs whose open terminal's status bar currently reads "Working" (vs "Worked for ...")
   let expandedTeams = new Set();    // lead session IDs whose team tile is expanded
@@ -723,7 +724,7 @@
   // Read only the live terminal rows. This avoids matching old status text when
   // the reader has scrolled up and gives notification logic one shared signal.
   function readTerminalSignals(entry) {
-    if (!entry.xterm) return { promptFound: false, workingFound: false };
+    if (!entry.xterm) return { promptFound: false, workingFound: false, completionSignatures: [] };
     const buf = entry.xterm.buffer.active;
     const rows = entry.xterm.rows;
     // The live prompt/status lives at the bottom of the terminal buffer. Using
@@ -747,7 +748,18 @@
     const hasInputControl = /(?:enter|return)\s+to\s+(?:select|confirm|submit|continue)|tab\s+to\s+amend|press\s+(?:enter|return)\s+to\s+(?:select|confirm|submit|continue)/i.test(liveText);
     const hasExplicitQuestion = /\b(?:do you want to|would you like to|allow this|approve this)\b/i.test(liveText);
     const promptFound = hasCancelControl && (hasInputControl || hasExplicitQuestion);
-    return { promptFound, workingFound };
+    // Codex exposes a positive completion marker. Record normalized durations
+    // from a wider tail so a marker from an older turn cannot complete the
+    // current turn when the live "Working" row is briefly redrawn.
+    const completionSignatures = new Set();
+    const tailBottom = liveTop + rows - 1;
+    for (let r = tailBottom; r >= Math.max(0, tailBottom - 199); r--) {
+      const line = buf.getLine(r);
+      if (!line) continue;
+      const match = line.translateToString(true).match(/^\s*[─━]+\s*Worked for\s+(?:\d+\s*[dhms]\s*)+/i);
+      if (match) completionSignatures.add(match[0].toLowerCase().replace(/\s+/g, ' ').trim());
+    }
+    return { promptFound, workingFound, completionSignatures: [...completionSignatures] };
   }
 
   // Scan the rendered buffer after each parsed write. UI state can react at once,
@@ -755,7 +767,7 @@
   // prevents xterm redraws from turning one prompt into repeated macOS alerts.
   function checkTerminalWaiting(termId, entry) {
     if (!entry.sessionId || !entry.xterm) return;
-    const { promptFound, workingFound } = readTerminalSignals(entry);
+    const { promptFound, workingFound, completionSignatures } = readTerminalSignals(entry);
     const isCodex = entry.engine === 'codex';
     const sid = entry.sessionId;
     const wasWaiting = termWaitingSessionIds.has(sid);
@@ -787,6 +799,9 @@
     }
 
     if (workingFound) {
+      if (!entry._turnWasWorking && isCodex) {
+        entry._codexCompletionBaseline = new Set(completionSignatures);
+      }
       entry._turnWasWorking = true;
       entry._attentionNotificationLatched = false;
       if (entry._replyReadyTimer) {
@@ -794,22 +809,29 @@
         entry._replyReadyTimer = null;
       }
     } else if (entry._turnWasWorking && !entry._replyReadyTimer) {
-      entry._replyReadyTimer = setTimeout(() => {
-        entry._replyReadyTimer = null;
-        const current = readTerminalSignals(entry);
-        if (entry.closing || current.workingFound) return;
-        entry._turnWasWorking = false;
-        if (isCodex) {
-          termCodexWorkingIds.delete(sid);
-          renderSessions();
-          refreshTerminalChip(termId, entry);
-          scrollTerminalToReplyIfUnfocused(termId, entry);
-        }
-        if (!current.promptFound) {
-          const s = sessionMap.get(sid);
-          if (s) fireTerminalNotification(termId, s, entry, 'ready');
-        }
-      }, 700);
+      const baseline = entry._codexCompletionBaseline || new Set();
+      const hasPositiveCompletion = !isCodex
+        || completionSignatures.some(signature => !baseline.has(signature));
+      if (hasPositiveCompletion) {
+        entry._replyReadyTimer = setTimeout(() => {
+          entry._replyReadyTimer = null;
+          const current = readTerminalSignals(entry);
+          if (entry.closing || current.workingFound) return;
+          if (isCodex && !current.completionSignatures.some(signature => !baseline.has(signature))) return;
+          entry._turnWasWorking = false;
+          entry._codexCompletionBaseline = null;
+          if (isCodex) {
+            termCodexWorkingIds.delete(sid);
+            renderSessions();
+            refreshTerminalChip(termId, entry);
+            scrollTerminalToReplyIfUnfocused(termId, entry);
+          }
+          if (!current.promptFound) {
+            const s = sessionMap.get(sid);
+            if (s) fireTerminalNotification(termId, s, entry, 'ready');
+          }
+        }, 700);
+      }
     }
 
     if (isCodex) {
@@ -854,6 +876,12 @@
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
   }
+
+  const clearTerminalReaderOutsidePane = event => {
+    if (!event.target?.closest?.('.terminal-body')) activeTerminalReaderId = null;
+  };
+  document.addEventListener('pointerdown', clearTerminalReaderOutsidePane, true);
+  document.addEventListener('focusin', clearTerminalReaderOutsidePane, true);
 
   function fireTerminalNotification(termId, s, entry, kind) {
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -1928,6 +1956,7 @@
     // terminal output, and xterm reflow must not turn a bottom pane into a held
     // pane or release a manually held pane.
     const beginViewportInteraction = () => {
+      activeTerminalReaderId = termId;
       // Change intent synchronously. Waiting for the next animation frame leaves
       // a race where a Codex write can still observe `bottom` and pull the reader
       // down before the browser reports the new viewport position.
@@ -1948,8 +1977,10 @@
     viewport?.addEventListener('touchstart', beginViewportInteraction, { passive: true });
     viewport?.addEventListener('touchend', settleViewportIntent, true);
     xterm.onKey(({ domEvent }) => {
+      activeTerminalReaderId = termId;
       if (['PageUp', 'PageDown', 'Home', 'End'].includes(domEvent.key)) settleViewportIntent();
     });
+    body.addEventListener('focusin', () => { activeTerminalReaderId = termId; });
 
     // If a bottom pane loses focus, re-pin it after the browser finishes its
     // focus work. A held pane is deliberately left untouched until Codex ends
@@ -2057,6 +2088,7 @@
       try { t.xterm.dispose(); } catch {}
       try { t.ro && t.ro.disconnect(); } catch {}
       if (t.sessionId) { openSessionIds.delete(t.sessionId); termWaitingSessionIds.delete(t.sessionId); termCodexWorkingIds.delete(t.sessionId); }
+      if (activeTerminalReaderId === termId) activeTerminalReaderId = null;
       if (t._waitRaf) cancelAnimationFrame(t._waitRaf);
       if (t._replyScrollRaf) cancelAnimationFrame(t._replyScrollRaf);
       if (t._viewportIntentRaf) cancelAnimationFrame(t._viewportIntentRaf);
@@ -2076,8 +2108,9 @@
   }
 
   function terminalPaneHasFocus(termId) {
-    const body = document.getElementById(`tbody-${termId}`);
-    return document.hasFocus() && !!body?.contains(document.activeElement);
+    const pane = document.getElementById(`pane-${termId}`);
+    return document.hasFocus()
+      && (activeTerminalReaderId === termId || !!pane?.contains(document.activeElement));
   }
 
   function terminalIsAtBottom(entry) {

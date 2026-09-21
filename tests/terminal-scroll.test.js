@@ -23,11 +23,13 @@ function functionSource(name) {
 function createController({ deferFrames = false } = {}) {
   const frames = [];
   const context = {
-    focused: false,
+    documentFocused: false,
+    paneContainsFocus: false,
+    activeTerminalReaderId: null,
     document: {
       activeElement: {},
-      hasFocus: () => context.focused,
-      getElementById: () => ({ contains: () => context.focused }),
+      hasFocus: () => context.documentFocused,
+      getElementById: () => ({ contains: () => context.paneContainsFocus }),
     },
     requestAnimationFrame: callback => {
       if (deferFrames) frames.push(callback); else callback();
@@ -125,12 +127,14 @@ test('reply completion moves only an unfocused pane to the bottom', () => {
   const controller = createController();
   const { entry, calls } = createEntry(40, 100);
 
-  controller.focused = true;
+  controller.documentFocused = true;
+  controller.paneContainsFocus = true;
   controller.scrollTerminalToReplyIfUnfocused('term', entry);
   assert.equal(entry.viewportMode, 'held');
   assert.deepEqual(calls, []);
 
-  controller.focused = false;
+  controller.documentFocused = false;
+  controller.paneContainsFocus = false;
   controller.scrollTerminalToReplyIfUnfocused('term', entry);
   assert.equal(entry.viewportMode, 'bottom');
   assert.deepEqual(calls.at(-1), ['bottom']);
@@ -140,10 +144,24 @@ test('reply completion does not leave bottom mode if the pane gains focus', () =
   const controller = createController({ deferFrames: true });
   const { entry, calls } = createEntry(40, 100);
 
-  controller.focused = false;
+  controller.documentFocused = false;
   controller.scrollTerminalToReplyIfUnfocused('term', entry);
-  controller.focused = true;
+  controller.documentFocused = true;
+  controller.paneContainsFocus = true;
   controller.flushFrames();
+
+  assert.equal(entry.viewportMode, 'held');
+  assert.deepEqual(calls, []);
+});
+
+test('a wheel-selected reader pane counts as focused without keyboard focus', () => {
+  const controller = createController();
+  const { entry, calls } = createEntry(40, 100);
+
+  controller.documentFocused = true;
+  controller.paneContainsFocus = false;
+  controller.activeTerminalReaderId = 'term';
+  controller.scrollTerminalToReplyIfUnfocused('term', entry);
 
   assert.equal(entry.viewportMode, 'held');
   assert.deepEqual(calls, []);
