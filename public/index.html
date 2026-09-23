@@ -147,7 +147,7 @@
     .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 
     /* ── Sessions panel ── */
-    .sessions-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+    .sessions-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; overflow-anchor: none; }
 
     /* ── Side-by-side layout when terminals are open ── */
     .main.layout-split { flex-direction: row; }
@@ -169,6 +169,32 @@
     .open-sessions-header { padding: 10px 16px 0; font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em; }
     .needs-input-section { border-bottom: 2px solid rgba(154,103,0,0.25); padding-bottom: 4px; background: #fffcf0; }
     .needs-input-header { padding: 10px 16px 0; font-size: 11px; font-weight: 700; color: var(--orange); text-transform: uppercase; letter-spacing: 0.06em; }
+    .delegations-section { border-top: 2px solid rgba(130,80,223,0.22); background: #fbfaff; }
+    .delegations-header { display: flex; align-items: center; gap: 8px; padding: 10px 16px 0; }
+    .delegations-toggle { border: 0; background: transparent; color: var(--purple); cursor: pointer; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; padding: 0; text-transform: uppercase; }
+    .delegations-toggle:hover { color: var(--text); }
+    .delegations-count { color: var(--text-faint); font-size: 11px; }
+    .delegations-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 10px; padding: 10px 16px 14px; }
+    .delegations-section.collapsed .delegations-grid { display: none; }
+    .delegation-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .delegation-card:hover { border-color: var(--border2); }
+    .delegation-title { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .delegation-meta { font-size: 10px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .delegation-summary { font-size: 11px; color: var(--text-dim); line-height: 1.4; max-height: 3em; overflow: hidden; }
+    .delegation-error { color: var(--red); }
+    .delegation-actions { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 3px; }
+    .delegation-live { background: #dafbe1; color: var(--green); border: 1px solid #a0e5b0; }
+    .delegation-pending { background: #fff8c5; color: var(--orange); border: 1px solid #f5d57a; }
+    .delegation-completed { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); }
+    .delegation-needs_human, .delegation-cancelled { background: #ffebe9; color: var(--red); border: 1px solid #ffc1ba; }
+
+    .drawer-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.25); z-index: 220; justify-content: flex-end; }
+    .drawer-overlay.open { display: flex; }
+    .drawer { width: min(720px, 94vw); height: 100%; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0,0,0,0.12); display: flex; flex-direction: column; }
+    .drawer-header { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+    .drawer-header h2 { flex: 1; font-size: 15px; font-weight: 600; margin: 0; }
+    .drawer-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px; }
+    .drawer-body pre { white-space: pre-wrap; word-break: break-word; font: 11px/1.45 var(--mono); color: var(--text-dim); margin: 0; }
 
     .sessions-grid {
       display: grid;
@@ -327,7 +353,9 @@
       flex-shrink: 0;
     }
 
-    .terminal-titlebar-name { flex: 1; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .terminal-titlebar-name { flex: 1; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: text; border-radius: 3px; padding: 1px 3px; }
+    .terminal-titlebar-name:hover { background: #f1f4f9; }
+    .terminal-rename-input { flex: 1; min-width: 0; font: inherit; font-weight: 700; color: var(--text); background: var(--surface); border: 1px solid var(--accent); border-radius: 3px; padding: 1px 3px; outline: none; }
     .terminal-titlebar-chips { display: flex; gap: 4px; align-items: center; flex-shrink: 0; margin: 0 8px; }
     .session-card.open { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(9,105,218,0.1); }
     .badge-open { background: #ddf4ff; color: var(--accent); border: 1px solid #b6e3ff; }
@@ -468,6 +496,7 @@
   </label>
   <button class="btn btn-ghost" onclick="openModal('modal-settings')" title="Settings">⚙ Settings</button>
   <button class="btn" onclick="loadSessions()">↺ Refresh</button>
+  <button class="btn" id="terminal-launch-btn" onclick="launchTerminal()" disabled title="Restart Hive to enable Terminal">⌘ Terminal</button>
   <button class="btn btn-primary" onclick="openNewModal()">+ New Session</button>
 </header>
 
@@ -485,6 +514,13 @@
     <div class="sessions-grid" id="sessions-grid">
       <div class="state-msg">Loading sessions…</div>
     </div>
+    <section class="delegations-section collapsed" id="delegations-section" style="display:none">
+      <div class="delegations-header">
+        <button class="delegations-toggle" id="delegations-toggle" onclick="toggleDelegations()" aria-expanded="false">▸ Delegated task agents</button>
+        <span class="delegations-count" id="delegations-count"></span>
+      </div>
+      <div class="delegations-grid" id="delegations-grid"></div>
+    </section>
   </div>  <!-- end sessions-panel -->
 
   <div class="terminals-panel hidden" id="terminals-panel">
@@ -509,6 +545,7 @@
     <div class="form-row" id="claude-model-row">
       <label class="form-label">Model</label>
       <select class="form-ctrl" id="new-model">
+        <option value="claude-opus-5.5">claude-opus-5.5 — most capable</option>
         <option value="claude-opus-5">claude-opus-5 — most capable</option>
         <option value="claude-sonnet-5[1m]" selected>claude-sonnet-5 (1M) — balanced</option>
         <option value="claude-sonnet-5">claude-sonnet-5</option>
@@ -529,7 +566,9 @@
     <div class="form-row" id="codex-model-row" style="display:none">
       <label class="form-label">Model</label>
       <select class="form-ctrl" id="new-model-codex">
-        <option value="gpt-5.6-luna" selected>gpt-5.6-luna</option>
+        <option value="gpt-6-luna" selected>gpt-6-luna</option>
+        <option value="gpt-6-sol">gpt-6-sol</option>
+        <option value="gpt-5.6-luna">gpt-5.6-luna</option>
         <option value="gpt-5.6-terra">gpt-5.6-terra</option>
         <option value="gpt-5.6-sol">gpt-5.6-sol</option>
         <option value="gpt-6-astra">gpt-6-astra</option>
@@ -616,11 +655,22 @@
   </div>
 </div>
 
+<div class="drawer-overlay" id="delegation-log-drawer">
+  <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="delegation-log-title">
+    <div class="drawer-header">
+      <h2 id="delegation-log-title">Delegation live log</h2>
+      <button class="btn btn-sm" onclick="closeDelegationLog()">Close</button>
+    </div>
+    <div class="drawer-body"><pre id="delegation-log-content">Loading…</pre></div>
+  </aside>
+</div>
+
 <script src="/xterm.js"></script>
 <script src="/xterm-addon-fit.js"></script>
 <script src="/xterm-addon-web-links.js"></script>
 <script>
   let sessions = [];
+  let delegations = [];
   let sessionMap = new Map();
   let openTerminals = new Map();   // termId -> { xterm, fitAddon, ws, ro, sessionId }
   let openSessionIds = new Set();   // session IDs with an open terminal
@@ -633,15 +683,37 @@
   let editingSessionId = null;      // session id whose name is being edited inline
   let terminalOrder = [];           // termIds in grid display order (drag-reorderable)
   let draggingTermId = null;        // termId currently being dragged
-  let prevSessionStates = new Map(); // sessionId -> state, for detecting waiting transitions
+  let activeTerminalReaderId = null; // pane most recently selected by keyboard, pointer, touch, or wheel
   let termWaitingSessionIds = new Set(); // session IDs whose open terminal is showing an interactive prompt
   let termCodexWorkingIds = new Set(); // codex session IDs whose open terminal's status bar currently reads "Working" (vs "Worked for ...")
   let expandedTeams = new Set();    // lead session IDs whose team tile is expanded
+  let sessionRenderRevision = 0;    // invalidates deferred scroll restores from an older render
+  const LS_DELEGATIONS_EXPANDED = 'hive-delegated-task-agents-expanded';
+  let delegationsExpanded = localStorage.getItem(LS_DELEGATIONS_EXPANDED) === 'true';
 
   // Hive naming is fully decoupled from Claude's JSONL naming.
   // customName is set exclusively in Hive and never overridden by Claude.
   // s.name is a read-only fallback from the JSONL head (set once at session start).
   function displayName(s) { return s.customName || s.name; }
+
+  function delegationIsLive(d) {
+    return ['imported', 'observed', 'pending', 'queued', 'starting', 'running', 'escalating'].includes(d?.state);
+  }
+
+  function delegationStateClass(state) {
+    if (['completed'].includes(state)) return 'delegation-completed';
+    if (['needs_human', 'cancelled', 'failed', 'blocked'].includes(state)) return 'delegation-needs_human';
+    if (['imported', 'observed', 'pending', 'queued', 'starting', 'escalating', 'succeeded_pending_reconcile'].includes(state)) return 'delegation-pending';
+    return 'delegation-live';
+  }
+
+  function delegationStateLabel(state) {
+    return String(state || 'pending').replace(/_/g, ' ');
+  }
+
+  function delegationGoogleStatusLabel(status) {
+    return String(status || 'not synced');
+  }
 
   // Codex has no live-process registry file like Claude's, so server.js's
   // `state` for it is a best-effort ps/lsof guess (see findLiveCodexCwds).
@@ -660,37 +732,78 @@
   function safeAttr(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
 
   // ── Interactive prompt detection ──────────────────────────────────────────
-  // Scan the last N visible rows of an xterm.js buffer for Claude Code's
-  // interactive prompt footer ("Esc to cancel"). Uses translateToString() on
-  // the already-rendered buffer so no ANSI stripping is needed.
-  function checkTerminalWaiting(termId, entry) {
-    if (!entry.sessionId || !entry.xterm) return;
+  // Read only the live terminal rows. This avoids matching old status text when
+  // the reader has scrolled up and gives notification logic one shared signal.
+  function readTerminalSignals(entry) {
+    if (!entry.xterm) return { promptFound: false, workingFound: false, automaticReviewFound: false, completionSignatures: [] };
     const buf = entry.xterm.buffer.active;
     const rows = entry.xterm.rows;
-    const vp = buf.viewportY;
-    const isCodex = entry.engine === 'codex';
-    let promptFound = false;
+    // The live prompt/status lives at the bottom of the terminal buffer. Using
+    // viewportY makes a user scrolling up look like Codex has finished its turn.
+    const liveTop = Math.max(0, Number(buf.baseY) || 0);
     let workingFound = false;
-    for (let r = vp + rows - 1; r >= Math.max(0, vp + rows - 8); r--) {
+    let automaticReviewFound = false;
+    const liveLines = [];
+    for (let r = liveTop + rows - 1; r >= Math.max(0, liveTop + rows - 8); r--) {
       const line = buf.getLine(r);
       if (!line) continue;
       const text = line.translateToString(true);
-      if (!promptFound && /esc to cancel/i.test(text)) promptFound = true;
-      // Codex's status line while generating is a spinner glyph, not a box-drawing
-      // rule: "◦ Working (39s • esc to interrupt)". Only once the turn ends does it
-      // become a full-width rule: "─ Worked for 50m 33s ───...─". These are NOT the
-      // same shape, so anchor on "Working" + "esc to interrupt" co-occurring on one
-      // line (specific enough to avoid matching ordinary prose) rather than requiring
-      // a '─' character, which the active line never has. Absence of a match (not a
-      // separate "Worked for" pattern) is the idle signal, same principle as promptFound.
-      if (isCodex && !workingFound && /\bWorking\b/.test(text) && /esc to interrupt/i.test(text)) workingFound = true;
+      liveLines.push(text);
+      // Both clients expose "esc to interrupt" only while a reply is active.
+      // Codex also needs "Working" on the same row so ordinary terminal output
+      // cannot imitate its status line.
+      if (/\bReviewing approval request\b/i.test(text) && /esc to interrupt/i.test(text)) {
+        automaticReviewFound = true;
+      }
+      if (!workingFound && /esc to interrupt/i.test(text)
+        && (entry.engine !== 'codex' || /\b(?:Working|Reviewing approval request)\b/i.test(text))) workingFound = true;
     }
+    // A code listing can contain both control phrases in the live rows. Count
+    // only a complete control footer with a nearby question or two choices.
+    // Active work also prints these phrases as ordinary output, so its status
+    // row rules out an interactive prompt.
+    const controlIndex = liveLines.findIndex(line => {
+      const controls = line.trim().split(/\s+[·•|]\s+/);
+      return controls.length > 1
+        && /^esc to cancel$/i.test(controls.at(-1))
+        && controls.some(control => /^(?:(?:enter|return)\s+to\s+(?:select|confirm|submit|continue)|tab\s+to\s+amend|press\s+(?:enter|return)\s+to\s+(?:select|confirm|submit|continue))$/i.test(control));
+    });
+    const promptLines = controlIndex < 0 ? [] : liveLines.slice(controlIndex + 1, controlIndex + 7);
+    const choiceCount = promptLines.filter(line => /^\s*(?:[›❯>]\s*)?\d+[.)]\s+\S/.test(line)).length;
+    const hasExplicitQuestion = promptLines.some(line => /\b(?:do you want to|would you like to|allow this|approve this)\b|\?\s*$/i.test(line));
+    const promptFound = !workingFound && controlIndex >= 0 && (choiceCount >= 2 || hasExplicitQuestion);
+    // Codex exposes a positive completion marker. Record normalized durations
+    // from a wider tail so a marker from an older turn cannot complete the
+    // current turn when the live "Working" row is briefly redrawn.
+    const completionSignatures = new Set();
+    const tailBottom = liveTop + rows - 1;
+    for (let r = tailBottom; r >= Math.max(0, tailBottom - 199); r--) {
+      const line = buf.getLine(r);
+      if (!line) continue;
+      const match = line.translateToString(true).match(/^\s*[─━]+\s*Worked for\s+(?:\d+\s*[dhms]\s*)+/i);
+      if (match) completionSignatures.add(match[0].toLowerCase().replace(/\s+/g, ' ').trim());
+    }
+    return { promptFound, workingFound, automaticReviewFound, completionSignatures: [...completionSignatures] };
+  }
+
+  // Scan the rendered buffer after each parsed write. UI state can react at once,
+  // but notification latches clear only after the signal is stably absent. This
+  // prevents xterm redraws from turning one prompt into repeated macOS alerts.
+  function checkTerminalWaiting(termId, entry) {
+    if (!entry.sessionId || !entry.xterm) return;
+    const { promptFound, workingFound, automaticReviewFound, completionSignatures } = readTerminalSignals(entry);
+    const isCodex = entry.engine === 'codex';
     const sid = entry.sessionId;
+    if (automaticReviewFound) {
+      entry._automaticReviewInProgress = true;
+      if (entry._attentionConfirmTimer) {
+        clearTimeout(entry._attentionConfirmTimer);
+        entry._attentionConfirmTimer = null;
+      }
+    }
     const wasWaiting = termWaitingSessionIds.has(sid);
     if (promptFound && !wasWaiting) {
       termWaitingSessionIds.add(sid);
-      const s = sessionMap.get(sid);
-      if (s) fireWaitingNotification(s);
       renderSessions();
       refreshTerminalChip(termId, entry);
     } else if (!promptFound && wasWaiting) {
@@ -698,18 +811,106 @@
       renderSessions();
       refreshTerminalChip(termId, entry);
     }
+
+    if (promptFound) {
+      if (entry._attentionClearTimer) {
+        clearTimeout(entry._attentionClearTimer);
+        entry._attentionClearTimer = null;
+      }
+      if (!entry._automaticReviewInProgress && !entry._attentionNotificationLatched
+        && !entry._attentionConfirmTimer) {
+        // Codex briefly renders normal approval controls before its automatic
+        // reviewer takes over. Wait for the prompt to remain stable so that
+        // temporary screen cannot alert before "Reviewing approval request"
+        // arrives. A real question stays visible and passes this check.
+        entry._attentionConfirmTimer = setTimeout(() => {
+          entry._attentionConfirmTimer = null;
+          const current = readTerminalSignals(entry);
+          if (entry.closing || entry._automaticReviewInProgress
+            || current.automaticReviewFound || !current.promptFound
+            || entry._attentionNotificationLatched) return;
+          entry._attentionNotificationLatched = true;
+          const s = sessionMap.get(sid);
+          if (s) fireTerminalNotification(termId, s, entry, 'attention');
+        }, 1200);
+      }
+    } else {
+      if (entry._attentionConfirmTimer) {
+        clearTimeout(entry._attentionConfirmTimer);
+        entry._attentionConfirmTimer = null;
+      }
+      if (entry._attentionNotificationLatched && !entry._attentionClearTimer) {
+        entry._attentionClearTimer = setTimeout(() => {
+          entry._attentionClearTimer = null;
+          if (!readTerminalSignals(entry).promptFound) entry._attentionNotificationLatched = false;
+        }, 1200);
+      }
+    }
+
+    if (workingFound) {
+      if (!entry._turnWasWorking && isCodex) {
+        entry._codexCompletionBaseline = new Set(completionSignatures);
+      }
+      entry._turnWasWorking = true;
+      entry._attentionNotificationLatched = false;
+      if (entry._replyReadyTimer) {
+        clearTimeout(entry._replyReadyTimer);
+        entry._replyReadyTimer = null;
+      }
+    } else if (entry._turnWasWorking && !entry._replyReadyTimer) {
+      const baseline = entry._codexCompletionBaseline || new Set();
+      const hasPositiveCompletion = !isCodex
+        || completionSignatures.some(signature => !baseline.has(signature));
+      if (hasPositiveCompletion) {
+        entry._replyReadyTimer = setTimeout(() => {
+          entry._replyReadyTimer = null;
+          const current = readTerminalSignals(entry);
+          if (entry.closing || current.workingFound) return;
+          if (isCodex && !current.completionSignatures.some(signature => !baseline.has(signature))) return;
+          entry._turnWasWorking = false;
+          entry._automaticReviewInProgress = false;
+          entry._codexCompletionBaseline = null;
+          if (isCodex) {
+            termCodexWorkingIds.delete(sid);
+            renderSessions();
+            refreshTerminalChip(termId, entry);
+            scrollTerminalToReplyIfUnfocused(termId, entry);
+          }
+          if (!current.promptFound) {
+            const s = sessionMap.get(sid);
+            if (s) fireTerminalNotification(termId, s, entry, 'ready');
+          }
+        }, 700);
+      }
+    }
+
     if (isCodex) {
       const wasWorking = termCodexWorkingIds.has(sid);
       if (workingFound && !wasWorking) {
         termCodexWorkingIds.add(sid);
         renderSessions();
         refreshTerminalChip(termId, entry);
-      } else if (!workingFound && wasWorking) {
-        termCodexWorkingIds.delete(sid);
-        renderSessions();
-        refreshTerminalChip(termId, entry);
       }
     }
+  }
+
+  // Streamed output must never take control from the terminal the user is
+  // reading. A completed Codex turn may return an inactive pane to the bottom,
+  // so its next reply is visible when the user returns to it.
+  function scrollTerminalToReplyIfUnfocused(termId, entry) {
+    const paneHasFocus = () => terminalPaneHasFocus(termId);
+    if (paneHasFocus()) return;
+    if (entry._replyScrollRaf) cancelAnimationFrame(entry._replyScrollRaf);
+    entry._replyScrollRaf = requestAnimationFrame(() => {
+      entry._replyScrollRaf = null;
+      if (entry.closing || paneHasFocus()) return;
+      // This is the only automatic transition from a held viewport to following
+      // output. Change the mode only after the deferred focus check. Otherwise a
+      // pane focused during this frame would keep a hidden `bottom` mode.
+      entry.viewportRevision++;
+      entry.viewportMode = 'bottom';
+      try { entry.xterm.scrollToBottom(); } catch {}
+    });
   }
 
   // Debounced: coalesce rapid data chunks into one check per animation frame.
@@ -726,14 +927,23 @@
     Notification.requestPermission();
   }
 
-  function fireWaitingNotification(s) {
+  const clearTerminalReaderOutsidePane = event => {
+    if (!event.target?.closest?.('.terminal-body')) activeTerminalReaderId = null;
+  };
+  document.addEventListener('pointerdown', clearTerminalReaderOutsidePane, true);
+  document.addEventListener('focusin', clearTerminalReaderOutsidePane, true);
+
+  function fireTerminalNotification(termId, s, entry, kind) {
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
-    if (document.hasFocus()) return; // user is already looking at Hive — no need to interrupt
+    if (terminalPaneHasFocus(termId)) return;
     const name = displayName(s);
-    new Notification('Claude needs your input', {
-      body: `"${name}" is waiting for a response`,
+    const agent = entry.engine === 'codex' ? 'Codex' : 'Claude';
+    const needsInput = kind === 'attention';
+    new Notification(needsInput ? `${agent} needs your input` : `${agent} reply is ready`, {
+      body: needsInput ? `"${name}" is waiting for a response` : `"${name}" has finished replying`,
       icon: '/icon.svg',
-      tag: `needs-input-${s.id}`,
+      tag: `${needsInput ? 'needs-input' : 'reply-ready'}-${s.id}`,
+      renotify: true,
     });
   }
 
@@ -746,6 +956,11 @@
     defaultCwd = info.defaultCwd || info.home;
     document.getElementById('new-cwd').placeholder = defaultCwd;
     document.getElementById('settings-cwd').value = defaultCwd;
+    const terminalBtn = document.getElementById('terminal-launch-btn');
+    if (terminalBtn && info.terminalAvailable) {
+      terminalBtn.disabled = false;
+      terminalBtn.title = 'Open a normal shell in the default directory';
+    }
     if (!info.codexAvailable) {
       const codexOpt = document.querySelector('#new-engine option[value="codex"]');
       if (codexOpt) { codexOpt.disabled = true; codexOpt.textContent += ' (not installed)'; }
@@ -769,19 +984,18 @@
 
   async function loadSessions() {
     try {
-      const res = await fetch('/api/sessions');
-      const newSessions = await res.json();
-      // Detect sessions that just entered waiting state and notify.
-      for (const s of newSessions) {
-        const prev = prevSessionStates.get(s.id);
-        if (s.state === 'waiting' && prev !== undefined && prev !== 'waiting') {
-          fireWaitingNotification(s);
-        }
-        prevSessionStates.set(s.id, s.state);
-      }
+      const [sessionRes, delegationRes] = await Promise.all([
+        fetch('/api/sessions'),
+        fetch('/api/delegations'),
+      ]);
+      if (!sessionRes.ok) throw new Error(`sessions request failed: ${sessionRes.status}`);
+      const newSessions = await sessionRes.json();
+      const newDelegations = delegationRes.ok ? await delegationRes.json() : [];
       sessions = newSessions;
+      delegations = Array.isArray(newDelegations) ? newDelegations : [];
       linkAndUpdateTerminalTitles(); // discover new sessions + sync titles
       renderSessions();
+      renderDelegations();
     } catch (err) {
       document.getElementById('sessions-grid').innerHTML = `
         <div class="state-msg" style="line-height:2">
@@ -794,31 +1008,86 @@
 
   // After each session reload: link unlinked terminals to their discovered session,
   // and update terminal titlebars whenever a session name changes.
+  function linkTerminalToSession(termId, terminal, sessionId, knownSession) {
+    if (!terminal || !sessionId) return false;
+    if (terminal.sessionId && terminal.sessionId !== sessionId) return false;
+    const isNewLink = terminal.sessionId !== sessionId;
+    terminal.sessionId = sessionId;
+    openSessionIds.add(sessionId);
+    const pane = document.getElementById(`pane-${termId}`);
+    if (pane) pane.dataset.sessionId = sessionId;
+    delete terminal.pendingCwd;
+    delete terminal.sessionIdsAtLaunch;
+    delete terminal.recoverUnlinked;
+
+    const patch = {};
+    if (terminal.launchModel) patch.model = terminal.launchModel;
+    if (terminal.launchEffort) patch.effort = terminal.launchEffort;
+    if (Object.prototype.hasOwnProperty.call(terminal, 'pendingCustomName')) {
+      patch.customName = terminal.pendingCustomName;
+      if (knownSession) knownSession.customName = terminal.pendingCustomName;
+    }
+    if (Object.keys(patch).length) {
+      fetch(`/api/sessions/${sessionId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      }).then(() => {
+        delete terminal.pendingCustomName;
+        persistTerminals();
+      }).catch(() => {});
+    }
+
+    if (knownSession && !terminal.fixedTitle) {
+      const name = displayName(knownSession);
+      terminal.name = name;
+      const nameEl = document.getElementById(`tname-${termId}`);
+      if (nameEl && nameEl.tagName !== 'INPUT') nameEl.textContent = name;
+    }
+    refreshTerminalChip(termId, terminal);
+    persistTerminals();
+    if (isNewLink) renderSessions();
+    return isNewLink;
+  }
+
+  function findPendingTerminalSession(terminal, availableSessions) {
+    const available = availableSessions.filter(s =>
+      !openSessionIds.has(s.id) && (!terminal.engine || s.engine === terminal.engine)
+    );
+    if (terminal.recoverUnlinked) {
+      // Old saved panes have no launch timestamp. Recover only the single live
+      // Codex session in the same cwd. Never guess among multiple candidates.
+      const liveSameCwd = available.filter(s =>
+        s.cwd === terminal.pendingCwd && s.state === 'running'
+      );
+      return liveSameCwd.length === 1 ? liveSameCwd[0] : null;
+    }
+    const eligible = available.filter(s =>
+      (!terminal.sessionIdsAtLaunch || !terminal.sessionIdsAtLaunch.has(s.id)) &&
+      new Date(s.lastActivity).getTime() >= terminal.startedAt - 10000 &&
+      new Date(s.lastActivity).getTime() <= terminal.startedAt + 120000
+    );
+    const sameCwd = eligible.filter(s => s.cwd === terminal.pendingCwd);
+    return sameCwd[0] || (eligible.length === 1 ? eligible[0] : null);
+  }
+
   function linkAndUpdateTerminalTitles() {
     const sessionById = new Map(sessions.map(s => [s.id, s]));
+    let terminalMetadataChanged = false;
 
     for (const [termId, t] of openTerminals) {
+      // Older saved-pane records did not include engine. Repair them from the
+      // session API so a restored Codex pane gets its Codex-only paste behavior.
+      const knownSession = t.sessionId ? sessionById.get(t.sessionId) : null;
+      if (knownSession?.engine && t.engine !== knownSession.engine) {
+        t.engine = knownSession.engine;
+        terminalMetadataChanged = true;
+        refreshTerminalChip(termId, t);
+      }
       // Link pending terminals (new sessions with unknown ID at launch time)
       if (!t.sessionId && t.pendingCwd !== undefined) {
-        const candidate = sessions.find(s =>
-          !openSessionIds.has(s.id) &&
-          new Date(s.lastActivity).getTime() >= t.startedAt - 5000 &&
-          s.cwd === t.pendingCwd
-        );
+        const candidate = findPendingTerminalSession(t, sessions);
         if (candidate) {
-          t.sessionId = candidate.id;
-          openSessionIds.add(candidate.id);
-          delete t.pendingCwd;
-          // Persist the launch model/effort so the card can show them — interactive
-          // sessions don't record effort anywhere we can read back (bug 4).
-          if (t.launchModel || t.launchEffort) {
-            fetch(`/api/sessions/${candidate.id}`, {
-              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: t.launchModel || undefined, effort: t.launchEffort || undefined }),
-            }).catch(() => {});
-          }
-          // Don't delete t.startedAt — still needed as sentinel for pendingCwd check
-          renderSessions(); // update card highlight
+          linkTerminalToSession(termId, t, candidate.id, candidate);
         }
       }
 
@@ -829,7 +1098,7 @@
           const name = displayName(s);
           t.name = name; // keep in sync for persistence/restore
           const el = document.getElementById(`tname-${termId}`);
-          if (el && el.textContent !== name) el.textContent = name;
+          if (el && el.tagName !== 'INPUT' && el.textContent !== name) el.textContent = name;
         }
       }
 
@@ -838,6 +1107,7 @@
       // card, which fully re-renders each time. Keep both in sync.
       if (t.sessionId) refreshTerminalChip(termId, t);
     }
+    if (terminalMetadataChanged) persistTerminals();
   }
 
   // Re-rendering the session grids replaces their children. Browsers can
@@ -862,20 +1132,28 @@
     };
   }
 
-  function restoreSessionsPanelScroll(snapshot) {
+  function restoreSessionsPanelScroll(snapshot, revision) {
     if (!snapshot) return;
     const panel = document.getElementById('sessions-panel');
     if (!panel) return;
-    if (snapshot.anchorId && snapshot.anchorOffset !== null) {
-      const anchor = document.getElementById(snapshot.anchorId);
-      if (anchor && panel.contains(anchor)) {
-        const panelRect = panel.getBoundingClientRect();
-        const anchorRect = anchor.getBoundingClientRect();
-        panel.scrollTop += anchorRect.top - panelRect.top - snapshot.anchorOffset;
-        return;
+    const restore = () => {
+      if (snapshot.anchorId && snapshot.anchorOffset !== null) {
+        const anchor = document.getElementById(snapshot.anchorId);
+        if (anchor && panel.contains(anchor)) {
+          const panelRect = panel.getBoundingClientRect();
+          const anchorRect = anchor.getBoundingClientRect();
+          panel.scrollTop += anchorRect.top - panelRect.top - snapshot.anchorOffset;
+          return;
+        }
       }
-    }
-    panel.scrollTop = snapshot.top;
+      panel.scrollTop = snapshot.top;
+    };
+    restore();
+    // The grid and sticky filter bar can settle one frame after innerHTML changes.
+    // Reapply the same anchor only if no newer render has superseded this one.
+    requestAnimationFrame(() => {
+      if (sessionRenderRevision === revision) restore();
+    });
   }
 
   function renderSessions() {
@@ -883,8 +1161,12 @@
     // input element and steal focus on every 5s refresh.
     if (editingSessionId !== null) return;
     const panelScroll = captureSessionsPanelScroll();
+    const renderRevision = ++sessionRenderRevision;
     const showArchived = document.getElementById('show-archived').checked;
-    let visible = sessions.filter(s => showArchived || !s.archived);
+    // Managed headless Codex sessions have their own queue section. Keep the
+    // scanner records available for terminal linking, but never mix them into
+    // the ordinary session grid.
+    let visible = sessions.filter(s => !s.delegated && (showArchived || !s.archived));
     if (activeState !== null) visible = visible.filter(s => effectiveSessionState(s) === activeState);
     if (activeSource !== null) visible = visible.filter(s => s.source === activeSource);
     if (activeGroup !== null) visible = visible.filter(s => s.group === activeGroup);
@@ -892,7 +1174,7 @@
     sessionMap.clear();
     for (const s of sessions) sessionMap.set(s.id, s);
 
-    const total = sessions.filter(s => showArchived || !s.archived).length;
+    const total = sessions.filter(s => !s.delegated && (showArchived || !s.archived)).length;
     document.getElementById('hdr-count').textContent =
       (activeState || activeSource || activeGroup) ? `${visible.length} / ${total}` : `${total}`;
 
@@ -940,7 +1222,114 @@
     }
 
     renderGroupBar();
-    restoreSessionsPanelScroll(panelScroll);
+    restoreSessionsPanelScroll(panelScroll, renderRevision);
+  }
+
+  function renderDelegations() {
+    const section = document.getElementById('delegations-section');
+    const grid = document.getElementById('delegations-grid');
+    const toggle = document.getElementById('delegations-toggle');
+    const count = document.getElementById('delegations-count');
+    if (!section || !grid) return;
+    if (!delegations.length) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = '';
+    section.classList.toggle('collapsed', !delegationsExpanded);
+    if (toggle) {
+      toggle.textContent = `${delegationsExpanded ? '▾' : '▸'} Delegated task agents`;
+      toggle.setAttribute('aria-expanded', String(delegationsExpanded));
+    }
+    if (count) count.textContent = `${delegations.length} run${delegations.length === 1 ? '' : 's'}`;
+    grid.innerHTML = delegations.map(renderDelegationCard).join('');
+  }
+
+  function renderDelegationCard(d) {
+    const state = String(d.state || 'pending');
+    const live = delegationIsLive(d);
+    const title = d.customName || `Task: ${d.taskTitle || 'Untitled task'}`;
+    const summary = d.summary || d.error || 'No result yet.';
+    const link = d.linkState ? ` · ${d.linkState}` : '';
+    const model = d.model ? `<span class="badge badge-model">${esc(shortModel(d.model))}</span>` : '';
+    const effort = d.effort ? `<span class="badge badge-effort">${esc(d.effort)}</span>` : '';
+    const resume = !live && d.sessionId
+      ? `<button class="btn btn-sm" onclick="resumeDelegatedSession('${safeAttr(d.delegationId)}')">Resume in Hive</button>`
+      : '';
+    return `
+      <article class="delegation-card" id="delegation-${esc(d.delegationId)}">
+        <div class="card-badges">
+          <span class="badge ${delegationStateClass(state)}"><span class="bdot"></span>${esc(delegationStateLabel(state))}</span>
+          <span class="badge badge-engine">${esc(d.tier || 'unknown')}</span>${model}${effort}
+        </div>
+        <div class="delegation-title" title="${esc(d.taskTitle || '')}">${esc(title)}</div>
+        <div class="delegation-meta">${esc(d.model || 'model pending')} · ${esc(d.effort || 'effort pending')}${esc(link)}</div>
+        <div class="delegation-meta">Google: ${esc(delegationGoogleStatusLabel(d.googleStatus))}</div>
+        <div class="delegation-meta">Imported ${esc(timeAgo(d.importedAt) || 'unknown')}${d.bridgeSessionId ? ` · bridge ${esc(String(d.bridgeSessionId).slice(0, 24))}` : ''}</div>
+        <div class="delegation-meta">Started ${esc(timeAgo(d.startedAt) || 'not started')} · attempt ${esc(d.attempt || d.attemptCount || 0)}</div>
+        <div class="delegation-summary${d.error ? ' delegation-error' : ''}" title="${esc(summary)}">${esc(String(summary).replace(/\s+/g, ' '))}</div>
+        <div class="delegation-actions">
+          <button class="btn btn-sm${live ? ' btn-primary' : ''}" onclick="openDelegationLog('${safeAttr(d.delegationId)}')">${live ? 'View live log' : 'View log'}</button>
+          ${resume}
+        </div>
+      </article>`;
+  }
+
+  function toggleDelegations() {
+    delegationsExpanded = !delegationsExpanded;
+    try { localStorage.setItem(LS_DELEGATIONS_EXPANDED, String(delegationsExpanded)); } catch {}
+    renderDelegations();
+  }
+
+  async function openDelegationLog(delegationId) {
+    const d = delegations.find(item => item.delegationId === delegationId);
+    document.getElementById('delegation-log-title').textContent = d?.customName || `Task: ${d?.taskTitle || delegationId}`;
+    document.getElementById('delegation-log-content').textContent = 'Loading…';
+    document.getElementById('delegation-log-drawer').classList.add('open');
+    try {
+      const res = await fetch(`/api/delegations/${encodeURIComponent(delegationId)}/log`);
+      const body = await res.json();
+      document.getElementById('delegation-log-content').textContent = res.ok ? (body.logTail || 'No log output yet.') : (body.error || 'Log unavailable.');
+    } catch (error) {
+      document.getElementById('delegation-log-content').textContent = `Log unavailable: ${error.message}`;
+    }
+  }
+
+  function closeDelegationLog() {
+    document.getElementById('delegation-log-drawer')?.classList.remove('open');
+  }
+
+  async function resumeDelegatedSession(delegationId) {
+    const d = delegations.find(item => item.delegationId === delegationId);
+    if (!d?.sessionId || delegationIsLive(d)) return;
+    const session = sessions.find(item => item.id === d.sessionId);
+    const name = d.customName || `Task: ${d.taskTitle || 'Delegated task'}`;
+    const proceed = confirm(`This resumes a new interactive Codex process from "${name}". It does not attach to the headless process. Continue?`);
+    if (!proceed) return;
+    for (const [termId, terminal] of openTerminals) {
+      if (terminal.sessionId === d.sessionId) {
+        document.getElementById(`pane-${termId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        try { terminal.xterm.focus(); } catch {}
+        return;
+      }
+    }
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          engine: 'codex', sessionId: d.sessionId, sessionName: name,
+          cwd: session?.cwd || d.cwd || defaultCwd,
+          model: d.model || undefined, effort: d.effort || undefined,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok || body.error) { alert('Failed to resume: ' + (body.error || res.status)); return; }
+      createTerminalPane(body.termId, {
+        name, model: d.model, effort: d.effort, sessionId: d.sessionId,
+        cwd: body.cwd || session?.cwd || d.cwd || defaultCwd, engine: 'codex', state: null,
+      });
+    } catch (error) { alert('Error: ' + error.message); }
   }
 
   function renderCard(s) {
@@ -1042,7 +1431,7 @@
 
   function renderGroupBar() {
     const showArchived = document.getElementById('show-archived').checked;
-    const vis = sessions.filter(s => showArchived || !s.archived);
+    const vis = sessions.filter(s => !s.delegated && (showArchived || !s.archived));
     const groups = [...new Set(vis.map(s => s.group).filter(Boolean))].sort();
     const bar = document.getElementById('group-bar');
     const pills = [];
@@ -1124,7 +1513,7 @@
     // those genuinely can't be plain --resume'd. Everything else (finished agents,
     // ordinary sessions) just opens. Any live straggler we missed is caught by
     // maybeHandleBgAgentError when the resume errors.
-    if (s.bgLive) {
+    if (s.engine !== 'codex' && s.bgLive) {
       pendingAgentOpen = s;
       document.getElementById('agent-modal-msg').textContent =
         `"${displayName(s)}" is currently running as a background agent.`;
@@ -1212,6 +1601,26 @@
 
   // ── Rename inline ──────────────────────────────────────────────────────────
 
+  async function saveSessionName(id, value, sourceTermId = null) {
+    const s = sessionMap.get(id) || sessions.find(item => item.id === id);
+    const customName = value.trim() || null;
+    const effectiveName = customName || s?.name || `Session ${id.slice(0, 8)}`;
+    await fetch(`/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customName }),
+    });
+    if (s) s.customName = customName;
+    for (const [termId, terminal] of openTerminals) {
+      if (terminal.sessionId !== id || (terminal.fixedTitle && termId !== sourceTermId)) continue;
+      terminal.name = effectiveName;
+      const el = document.getElementById(`tname-${termId}`);
+      if (el && el.tagName !== 'INPUT') el.textContent = effectiveName;
+    }
+    persistTerminals();
+    return effectiveName;
+  }
+
   function startRename(id) {
     const s = sessionMap.get(id);
     if (!s) return;
@@ -1235,33 +1644,9 @@
       done = true;
       editingSessionId = null;
       const newName = input.value.trim();
-      const effectiveName = newName || s.name;
-      if (newName && newName !== currentDisplay) {
-        await fetch(`/api/sessions/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ customName: newName }),
-        });
-      } else if (!newName && s.customName) {
-        await fetch(`/api/sessions/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ customName: null }),
-        });
+      if (newName !== currentDisplay || (!newName && s.customName)) {
+        await saveSessionName(id, newName);
       }
-      // Update the live titlebar of any open terminal for this session in place.
-      // We intentionally do NOT close/reopen the terminal: that restarted the PTY
-      // (losing running work) and outright closed agent-view terminals. The tradeoff
-      // is that Claude Code's own in-terminal status bar keeps its original name
-      // until the session is next opened fresh — worth it to never disrupt a session.
-      for (const [termId, t] of openTerminals) {
-        if (t.sessionId === id && !t.fixedTitle) {
-          t.name = effectiveName;
-          const el = document.getElementById(`tname-${termId}`);
-          if (el) el.textContent = effectiveName;
-        }
-      }
-      persistTerminals();
       loadSessions();
     }
 
@@ -1322,8 +1707,8 @@
     document.getElementById('new-cwd').value = '';
     document.getElementById('new-cwd').placeholder = defaultCwd;
     document.getElementById('new-engine').value = 'codex';
-    document.getElementById('new-model-codex').value = 'gpt-5.6-luna';
-    document.getElementById('new-effort-codex').value = 'max';
+    document.getElementById('new-model-codex').value = 'gpt-6-luna';
+    document.getElementById('new-effort-codex').value = 'xhigh';
     onEngineChange();
     openModal('modal-new');
   }
@@ -1370,6 +1755,25 @@
         }).catch(() => {});
       }
       createTerminalPane(termId, { name: label, model, effort, engine, state: null, sessionId: newId || null, cwd: actualCwd });
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  }
+
+  // Open a normal shell immediately. Unlike New Session, this does not show a
+  // configuration dialog and never starts Claude Code or Codex.
+  async function launchTerminal() {
+    try {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ engine: 'terminal', cwd: defaultCwd }),
+      });
+      const { termId, cwd: actualCwd, error } = await res.json();
+      if (error) { alert('Failed to open terminal: ' + error); return; }
+      createTerminalPane(termId, {
+        name: 'Terminal', engine: 'terminal', state: null, cwd: actualCwd,
+      });
     } catch (err) {
       alert('Error: ' + err.message);
     }
@@ -1433,6 +1837,70 @@
     if (chipsEl) chipsEl.innerHTML = terminalChipsHtml(entry.state, entry.model, entry.effort, entry.engine);
   }
 
+  function terminalTitleLabel(termId, name) {
+    const label = document.createElement('span');
+    label.className = 'terminal-titlebar-name';
+    label.id = `tname-${termId}`;
+    label.textContent = name;
+    label.title = 'Click to rename';
+    label.onclick = event => startTerminalRename(event, termId);
+    return label;
+  }
+
+  function startTerminalRename(event, termId) {
+    event?.preventDefault();
+    event?.stopPropagation();
+    const terminal = openTerminals.get(termId);
+    const nameEl = document.getElementById(`tname-${termId}`);
+    if (!terminal || !nameEl || nameEl.tagName === 'INPUT') return;
+    const originalName = terminal.name || nameEl.textContent || 'Terminal';
+    const input = document.createElement('input');
+    input.className = 'terminal-rename-input';
+    input.id = `tname-${termId}`;
+    input.value = originalName;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const finish = name => input.replaceWith(terminalTitleLabel(termId, name));
+    const cancel = () => {
+      if (done) return;
+      done = true;
+      finish(originalName);
+    };
+    const save = async () => {
+      if (done) return;
+      done = true;
+      const requestedName = input.value.trim();
+      try {
+        let effectiveName = requestedName || originalName;
+        if (terminal.sessionId) {
+          effectiveName = await saveSessionName(terminal.sessionId, requestedName, termId);
+        } else {
+          terminal.name = effectiveName;
+          if (terminal.engine !== 'terminal' && requestedName) {
+            terminal.pendingCustomName = requestedName;
+          }
+          persistTerminals();
+        }
+        finish(effectiveName);
+        renderSessions();
+      } catch (err) {
+        finish(originalName);
+        alert('Failed to rename session: ' + err.message);
+      }
+    };
+
+    input.addEventListener('mousedown', e => e.stopPropagation());
+    input.addEventListener('click', e => e.stopPropagation());
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+  }
+
   function createTerminalPane(termId, info) {
     const { name, state, model, effort, sessionId, engine } = info;
 
@@ -1459,7 +1927,7 @@
     pane.dataset.sessionId = sessionId || '';
     pane.innerHTML = `
       <div class="terminal-titlebar">
-        <span class="terminal-titlebar-name" id="tname-${termId}">${esc(name)}</span>
+        <span class="terminal-titlebar-name" id="tname-${termId}" onclick="startTerminalRename(event, '${termId}')" title="Click to rename">${esc(name)}</span>
         <div class="terminal-titlebar-chips" id="tchips-${termId}">${terminalChipsHtml(badgeState, model, effort, engine)}</div>
         <button class="terminal-close" onclick="closeTerminal('${termId}')" title="Close">×</button>
       </div>
@@ -1511,18 +1979,51 @@
       name: info.name || '', model: info.model || null, effort: info.effort || null, cwd: info.cwd || null,
       engine: info.engine || 'claude',
       state: badgeState || null,
+      // `bottom` follows the live buffer. `held` preserves the visible content
+      // with an xterm marker while output and layout refits change line numbers.
+      viewportMode: 'bottom',
+      viewportRevision: 0,
       closing: false, reconnectDelay: 500, reconnectTimer: null,
     };
-    if (!info.sessionId && info.cwd) {
+    if (!info.sessionId && info.cwd && info.engine !== 'terminal') {
       // New session without a pre-assigned id (legacy/fallback): match by cwd+time.
-      entry.pendingCwd = info.cwd;
-      entry.startedAt = Date.now();
+      entry.pendingCwd = info.pendingCwd || info.cwd;
+      const hasLaunchTime = Number.isFinite(info.startedAt) && info.startedAt > 0;
+      entry.startedAt = hasLaunchTime ? info.startedAt : (info.restored ? 0 : Date.now());
+      entry.recoverUnlinked = !!info.restored && !hasLaunchTime;
       entry.launchModel = info.model || null;
       entry.launchEffort = info.effort || null;
+      entry.sessionIdsAtLaunch = Array.isArray(info.sessionIdsAtLaunch)
+        ? new Set(info.sessionIdsAtLaunch)
+        : info.restored ? null : new Set(sessions.map(s => s.id));
+      if (Object.prototype.hasOwnProperty.call(info, 'pendingCustomName')) {
+        entry.pendingCustomName = info.pendingCustomName;
+      }
     }
+
+    const body = document.getElementById(`tbody-${termId}`);
+    installTerminalViewportController(termId, entry, body, xterm);
+
+    // If a bottom pane loses focus, re-pin it after the browser finishes its
+    // focus work. A held pane is deliberately left untouched until Codex ends
+    // its reply while that pane is unfocused.
+    body.addEventListener('focusout', () => {
+      requestAnimationFrame(() => {
+        if (entry.closing || terminalPaneHasFocus(termId)) return;
+        if (entry.viewportMode === 'bottom' || terminalIsAtBottom(entry)) {
+          entry.viewportMode = 'bottom';
+          try { entry.xterm.scrollToBottom(); } catch {}
+        }
+      });
+    });
 
     // Input/resize use whatever socket is current, so they survive reconnects.
     xterm.onData(data => {
+      entry._automaticReviewInProgress = false;
+      if (entry._attentionConfirmTimer) {
+        clearTimeout(entry._attentionConfirmTimer);
+        entry._attentionConfirmTimer = null;
+      }
       if (entry.ws && entry.ws.readyState === WebSocket.OPEN) entry.ws.send(JSON.stringify({ type: 'input', data }));
     });
     xterm.onResize(({ cols, rows }) => {
@@ -1530,7 +2031,7 @@
     });
 
     const ro = new ResizeObserver(() => scheduleFit(entry));
-    ro.observe(document.getElementById(`tbody-${termId}`));
+    ro.observe(body);
     entry.ro = ro;
 
     openTerminals.set(termId, entry);
@@ -1554,22 +2055,26 @@
     if (isReconnect) { try { entry.xterm.reset(); } catch {} }
     ws.onopen = () => {
       entry.reconnectDelay = 500;
-      const viewport = captureTerminalViewport(entry.xterm);
+      const viewport = captureTerminalViewport(entry);
       try { entry.fitAddon.fit(); ws.send(JSON.stringify({ type: 'resize', cols: entry.xterm.cols, rows: entry.xterm.rows })); } catch {}
-      restoreTerminalViewport(entry.xterm, viewport);
+      restoreTerminalViewport(entry, viewport);
     };
     ws.onmessage = e => {
       try {
         const msg = JSON.parse(e.data);
+        if (msg.type === 'session') {
+          const linked = linkTerminalToSession(termId, entry, msg.sessionId, sessionMap.get(msg.sessionId));
+          if (linked) loadSessions();
+        }
         if (msg.type === 'data') {
           // write() isn't synchronous for large payloads (e.g. the full buffer replay
           // sent on reconnect, which can be thousands of chunks for a long session) —
           // scanning before it finishes samples a mid-replay frame, not the true final
           // state, and can latch a stale "Working" match that nothing ever corrects
           // once the session is genuinely idle. Scan only once this write is parsed.
-          const viewport = captureTerminalViewport(entry.xterm);
+          const viewport = captureTerminalViewport(entry);
           entry.xterm.write(msg.data, () => {
-            restoreTerminalViewport(entry.xterm, viewport);
+            restoreTerminalViewport(entry, viewport);
             scheduleWaitingCheck(termId, entry);
           });
           maybeHandleBgAgentError(termId, msg.data);
@@ -1610,7 +2115,14 @@
       try { t.xterm.dispose(); } catch {}
       try { t.ro && t.ro.disconnect(); } catch {}
       if (t.sessionId) { openSessionIds.delete(t.sessionId); termWaitingSessionIds.delete(t.sessionId); termCodexWorkingIds.delete(t.sessionId); }
+      if (activeTerminalReaderId === termId) activeTerminalReaderId = null;
       if (t._waitRaf) cancelAnimationFrame(t._waitRaf);
+      if (t._replyScrollRaf) cancelAnimationFrame(t._replyScrollRaf);
+      if (t._viewportIntentRaf) cancelAnimationFrame(t._viewportIntentRaf);
+      if (t._fitRaf) cancelAnimationFrame(t._fitRaf);
+      if (t._attentionConfirmTimer) clearTimeout(t._attentionConfirmTimer);
+      if (t._attentionClearTimer) clearTimeout(t._attentionClearTimer);
+      if (t._replyReadyTimer) clearTimeout(t._replyReadyTimer);
       renderSessions();
       openTerminals.delete(termId);
     }
@@ -1623,26 +2135,110 @@
     persistTerminals();
   }
 
-  function captureTerminalViewport(xterm) {
+  function terminalPaneHasFocus(termId) {
+    const pane = document.getElementById(`pane-${termId}`);
+    return document.hasFocus()
+      && (activeTerminalReaderId === termId || !!pane?.contains(document.activeElement));
+  }
+
+  function terminalIsAtBottom(entry) {
+    const buffer = entry?.xterm?.buffer?.active;
+    if (!buffer) return true;
+    const viewportY = Number(buffer.viewportY);
+    const baseY = Number(buffer.baseY);
+    return Number.isFinite(viewportY) && Number.isFinite(baseY) && viewportY >= baseY;
+  }
+
+  function holdTerminalViewport(entry) {
+    if (!entry) return;
+    // Invalidate snapshots captured by writes that have not finished parsing.
+    // Their callbacks must not overwrite this newer reader action.
+    entry.viewportRevision++;
+    entry.viewportMode = 'held';
+  }
+
+  function installTerminalViewportController(termId, entry, body, xterm) {
+    // xterm's screen and scrollbar are sibling elements. Listen on their common
+    // terminal body so a wheel over the text is captured, not only a wheel over
+    // the narrow scrollbar gutter.
+    const beginViewportInteraction = () => {
+      activeTerminalReaderId = termId;
+      holdTerminalViewport(entry);
+      if (entry._viewportIntentRaf) cancelAnimationFrame(entry._viewportIntentRaf);
+    };
+    const settleViewportIntent = () => {
+      beginViewportInteraction();
+      entry._viewportIntentRaf = requestAnimationFrame(() => {
+        entry._viewportIntentRaf = null;
+        if (entry.closing) return;
+        entry.viewportMode = terminalIsAtBottom(entry) ? 'bottom' : 'held';
+      });
+    };
+    body.addEventListener('wheel', settleViewportIntent, { passive: true, capture: true });
+    body.addEventListener('pointerdown', beginViewportInteraction, true);
+    body.addEventListener('pointerup', settleViewportIntent, true);
+    body.addEventListener('touchstart', beginViewportInteraction, { passive: true, capture: true });
+    body.addEventListener('touchend', settleViewportIntent, true);
+    body.addEventListener('focusin', () => { activeTerminalReaderId = termId; });
+    xterm.onKey(({ domEvent }) => {
+      activeTerminalReaderId = termId;
+      if (['PageUp', 'PageDown', 'Home', 'End'].includes(domEvent.key)) settleViewportIntent();
+    });
+  }
+
+  function captureTerminalViewport(entry) {
+    const xterm = entry?.xterm;
     const buffer = xterm?.buffer?.active;
     if (!buffer) return null;
     const viewportY = Number(buffer.viewportY);
     const baseY = Number(buffer.baseY);
     if (!Number.isFinite(viewportY) || !Number.isFinite(baseY)) return null;
-    return { viewportY, atBottom: viewportY >= baseY };
+    const wasAtBottom = entry.viewportMode === 'bottom' || viewportY >= baseY;
+    if (wasAtBottom) return { wasAtBottom: true, marker: null, revision: entry.viewportRevision };
+
+    // A raw viewportY is invalid after xterm reflows wrapped lines. Anchor the
+    // top visible row to a marker instead. xterm updates marker.line as rows are
+    // inserted, removed, or reflowed.
+    let marker = null;
+    const cursorY = Number(buffer.cursorY);
+    if (Number.isFinite(cursorY)) {
+      try { marker = xterm.registerMarker(viewportY - (baseY + cursorY)); } catch {}
+    }
+    return {
+      wasAtBottom: false,
+      marker,
+      viewportY,
+      revision: entry.viewportRevision,
+    };
   }
 
-  function restoreTerminalViewport(xterm, snapshot) {
+  function restoreTerminalViewport(entry, snapshot) {
+    const xterm = entry?.xterm;
     if (!xterm || !snapshot) return;
     try {
-      if (snapshot.atBottom) {
+      // A wheel, scrollbar, or navigation-key action happened after capture.
+      // The reader's newer viewport always wins over this stale async restore.
+      if (snapshot.revision !== entry.viewportRevision) return;
+      if (snapshot.wasAtBottom) {
+        entry.viewportMode = 'bottom';
         xterm.scrollToBottom();
         return;
       }
+      entry.viewportMode = 'held';
       const baseY = Number(xterm.buffer.active.baseY);
-      const maxY = Number.isFinite(baseY) ? baseY : snapshot.viewportY;
-      xterm.scrollToLine(Math.max(0, Math.min(snapshot.viewportY, maxY)));
-    } catch {}
+      const markerLine = Number(snapshot.marker?.line);
+      // Never fall back to distance-from-bottom. If xterm invalidates a marker,
+      // that fallback moves the reader down as output grows. An absolute row can
+      // be imperfect after reflow, but it cannot chase new output.
+      const targetLine = Number.isFinite(markerLine) && markerLine >= 0
+        ? markerLine
+        : snapshot.viewportY;
+      const maxY = Number.isFinite(baseY) ? baseY : targetLine;
+      xterm.scrollToLine(Math.max(0, Math.min(targetLine, maxY)));
+    } catch {
+    } finally {
+      try { snapshot.marker?.dispose(); } catch {}
+    }
   }
 
   // Debounced fit (one per animation frame, so it lands AFTER a layout transition
@@ -1657,7 +2253,7 @@
     if (entry._fitRaf) cancelAnimationFrame(entry._fitRaf);
     entry._fitRaf = requestAnimationFrame(() => {
       entry._fitRaf = null;
-      const viewport = captureTerminalViewport(entry.xterm);
+      const viewport = captureTerminalViewport(entry);
       try {
         entry.fitAddon.fit();
         const ws = entry.ws;
@@ -1665,7 +2261,7 @@
           ws.send(JSON.stringify({ type: 'resize', cols: entry.xterm.cols, rows: entry.xterm.rows }));
         }
       } catch {}
-      restoreTerminalViewport(entry.xterm, viewport);
+      restoreTerminalViewport(entry, viewport);
     });
   }
 
@@ -1712,6 +2308,9 @@
   document.querySelectorAll('.modal-overlay').forEach(el =>
     el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); })
   );
+  document.getElementById('delegation-log-drawer')?.addEventListener('click', e => {
+    if (e.target.id === 'delegation-log-drawer') closeDelegationLog();
+  });
 
   // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -1734,7 +2333,11 @@
   // attach/fork modal regardless of how the session was classified at open time.
   function maybeHandleBgAgentError(termId, chunk) {
     const t = openTerminals.get(termId);
-    if (!t || t.bgHandled) return;
+    // This diagnostic belongs to Claude's background-agent protocol. Codex can
+    // reproduce the words in ordinary terminal output, but has no attach/fork UI.
+    // A normal shell can print this text as ordinary output. Only a Hive-managed
+    // Claude pane can act on Claude's background-agent diagnostic.
+    if (!t || t.engine !== 'claude' || t.bgHandled) return;
     t.recentText = ((t.recentText || '') + chunk).slice(-3000);
     if (!/currently running as a background agent|--fork-session to branch off/i.test(t.recentText)) return;
     t.bgHandled = true;
@@ -1822,8 +2425,8 @@
     if (!bar) return;
     bar.setAttribute('draggable', 'true');
     bar.addEventListener('dragstart', e => {
-      // Don't initiate a drag from the close button.
-      if (e.target.closest('.terminal-close')) { e.preventDefault(); return; }
+      // Title text edits and close actions must not initiate a pane drag.
+      if (e.target.closest('.terminal-close, .terminal-titlebar-name, .terminal-rename-input')) { e.preventDefault(); return; }
       draggingTermId = termId;
       pane.classList.add('dragging');
       try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', termId); } catch {}
@@ -1870,6 +2473,35 @@
     for (const [, t] of openTerminals) scheduleFit(t);
     persistTerminals();
   }
+
+  function clipboardHasImage(clipboard) {
+    const isImageFile = file =>
+      /^image\//i.test(file?.type || '') || /\.(avif|gif|heic|jpeg|jpg|png|webp)$/i.test(file?.name || '');
+    return [...(clipboard?.items || [])].some(item =>
+      item.kind === 'file' && (isImageFile(item.getAsFile?.()) || /^image\//i.test(item.type || ''))
+    ) || [...(clipboard?.files || [])].some(isImageFile) || [...(clipboard?.types || [])].some(type => /^image\//i.test(type));
+  }
+
+  // Cmd+V and Edit → Paste both produce a browser paste event. Listen on the
+  // document in capture phase so the behavior is independent of xterm's
+  // internal textarea target.
+  document.addEventListener('paste', event => {
+    const target = event.target;
+    const active = document.activeElement;
+    const body = target?.closest?.('.terminal-body') || active?.closest?.('.terminal-body');
+    if (!body || !clipboardHasImage(event.clipboardData)) return;
+    const termId = body.id.replace('tbody-', '');
+    const entry = openTerminals.get(termId);
+    if (!entry || entry.engine !== 'codex') return;
+    event.preventDefault();
+    event.stopPropagation();
+    try { entry.xterm.focus(); } catch {}
+    if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
+      // Codex 0.154 handles Ctrl+V itself as a native image-paste action.
+      // Do not add Escape: that changes the input into a different key chord.
+      entry.ws.send(JSON.stringify({ type: 'input', data: '\x16' }));
+    }
+  }, true);
 
   // ── Click-to-open links (capture phase, pixel→cell) ─────────────────────────
   // URLs are opened synchronously (preserves the user gesture for window.open).
@@ -1972,7 +2604,14 @@
         return {
           termId, sessionId: t.sessionId || null, name: t.name || '',
           model: t.model || null, effort: t.effort || null, cwd: t.cwd || null,
+          engine: t.engine || 'claude',
           fixedTitle: !!t.fixedTitle,
+          pendingCwd: t.pendingCwd || null,
+          startedAt: t.startedAt || null,
+          sessionIdsAtLaunch: t.sessionIdsAtLaunch ? [...t.sessionIdsAtLaunch] : null,
+          ...(Object.prototype.hasOwnProperty.call(t, 'pendingCustomName')
+            ? { pendingCustomName: t.pendingCustomName }
+            : {}),
         };
       }).filter(Boolean);
       localStorage.setItem(LS_TERMINALS, JSON.stringify(list));
@@ -1989,7 +2628,13 @@
       // longer has it (restarted), connectTerminalWS gets a 4004 and cleans up.
       createTerminalPane(s.termId, {
         name: s.name, model: s.model, effort: s.effort, cwd: s.cwd,
-        sessionId: s.sessionId, fixedTitle: s.fixedTitle, state: null,
+        sessionId: s.sessionId, fixedTitle: s.fixedTitle, engine: s.engine || 'claude', state: null,
+        pendingCwd: s.pendingCwd, startedAt: s.startedAt,
+        sessionIdsAtLaunch: s.sessionIdsAtLaunch,
+        ...(Object.prototype.hasOwnProperty.call(s, 'pendingCustomName')
+          ? { pendingCustomName: s.pendingCustomName }
+          : {}),
+        restored: true,
       });
     }
   }

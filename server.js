@@ -3,12 +3,28 @@
 const express = require('express');
 const http = require('http');
 const { WebSocketServer } = require('ws');
-const pty = require('node-pty');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { execSync, execFile, execFileSync } = require('child_process');
+
+// Google Drive can restore the native node-pty helper without its executable
+// bit. node-pty then reports only "posix_spawnp failed" for every terminal type.
+// Repair it before the module handles its first spawn. postinstall does the same,
+// but Hive must also recover when permissions change after installation.
+const ptySpawnHelper = path.join(
+  __dirname, 'node_modules', 'node-pty', 'prebuilds',
+  `${process.platform}-${process.arch}`, 'spawn-helper'
+);
+try {
+  if (fs.existsSync(ptySpawnHelper) && !(fs.statSync(ptySpawnHelper).mode & 0o111)) {
+    fs.chmodSync(ptySpawnHelper, 0o755);
+  }
+} catch (err) {
+  console.warn(`Could not make node-pty spawn helper executable: ${err.message}`);
+}
+const pty = require('node-pty');
 
 const app = express();
 const server = http.createServer(app);
@@ -23,6 +39,9 @@ const TEAMS_DIR = path.join(CLAUDE_DIR, 'teams');       // agent-teams config (e
 const META_FILE = path.join(CLAUDE_DIR, 'web-sessions-meta.json');
 const CODEX_DIR = path.join(HOME, '.codex');
 const CODEX_SESSIONS_DIR = path.join(CODEX_DIR, 'sessions'); // rollout-*.jsonl under YYYY/MM/DD
+const TASK_DELEGATION_DIR = process.env.HIVE_TASK_DELEGATION_DIR || path.join(HOME, '.config', 'hive', 'task-delegation');
+const DELEGATIONS_FILE = path.join(TASK_DELEGATION_DIR, 'delegations.json');
+const RUNNER_TOKEN_FILE = path.join(TASK_DELEGATION_DIR, 'runner-token');
 
 let claudeBin = 'claude';
 try { claudeBin = execSync('which claude', { encoding: 'utf8' }).trim(); } catch {}
@@ -30,6 +49,13 @@ try { claudeBin = execSync('which claude', { encoding: 'utf8' }).trim(); } catch
 let codexBin = 'codex';
 let codexAvailable = false;
 try { codexBin = execSync('which codex', { encoding: 'utf8' }).trim(); codexAvailable = true; } catch {}
+
+// A plain pane uses the user's login shell, so it loads the same PATH and shell
+// setup as a normal Terminal window. Keep the executable server-controlled: the
+// browser can choose only the `terminal` engine, never an arbitrary command.
+let terminalBin = process.env.SHELL || '/bin/zsh';
+if (!path.isAbsolute(terminalBin) || !fs.existsSync(terminalBin)) terminalBin = '/bin/zsh';
+const terminalAvailable = fs.existsSync(terminalBin);
 
 // ── Security guard ────────────────────────────────────────────────────────
 // Two independent controls, because this process can spawn an interactive Claude
@@ -166,6 +192,112 @@ function loadMeta() {
 }
 function saveMeta(meta) {
   try { fs.writeFileSync(META_FILE, JSON.stringify(meta, null, 2)); } catch {}
+}
+
+function loadDelegations() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(DELEGATIONS_FILE, 'utf8'));
+    if (Array.isArray(raw)) return { version: 1, records: Object.fromEntries(raw.map(r => [r.delegationId, r])) };
+    if (raw && typeof raw === 'object' && raw.records && typeof raw.records === 'object') return raw;
+  } catch {}
+  return { version: 1, records: {} };
+}
+
+function saveDelegations(store) {
+  fs.mkdirSync(TASK_DELEGATION_DIR, { recursive: true, mode: 0o700 });
+  const temp = `${DELEGATIONS_FILE}.${process.pid}.${Date.now()}.tmp`;
+  let fd;
+  try {
+    fd = fs.openSync(temp, 'w', 0o600);
+    fs.writeFileSync(fd, JSON.stringify(store, null, 2) + '\n', 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    try { fs.chmodSync(temp, 0o600); } catch {}
+    fs.renameSync(temp, DELEGATIONS_FILE);
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+    try { fs.unlinkSync(temp); } catch {}
+  }
+}
+
+function loadRunnerToken() {
+  const token = (process.env.HIVE_RUNNER_TOKEN || '').trim();
+  if (token) return token;
+  try {
+    const fileToken = fs.readFileSync(RUNNER_TOKEN_FILE, 'utf8').trim();
+    return fileToken || null;
+  } catch {
+    return null;
+  }
+}
+
+function requireRunnerToken(req, res) {
+  const token = loadRunnerToken();
+  const auth = req.headers.authorization || '';
+  const provided = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim() || '';
+  if (!token || !provided || !safeEqual(provided, token)) {
+    res.status(401).json({ error: 'runner token required' });
+    return false;
+  }
+  return true;
+}
+
+function requireDelegationReadAccess(req, res) {
+  // The browser UI is local by default. Use the socket peer address, not the
+  // client-controlled Host header, for the local exception. If Hive is exposed
+  // on NetBird, the existing host middleware has already validated the normal
+  // Hive token; keep that same boundary for task-derived cards and logs. The
+  // runner may also read through its private token.
+  const peer = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+  if (LOOPBACK_HOSTS.has(peer) || peer === '127.0.0.1' || peer === '::1') return true;
+  const url = new URL(req.originalUrl || req.url, 'http://placeholder');
+  if (tokenSource(req, url)) return true;
+  return requireRunnerToken(req, res);
+}
+
+function safeDelegationId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{8,120}$/.test(value);
+}
+
+function boundedString(value, max = 1000) {
+  if (value === null || value === undefined) return value;
+  return String(value).replace(/[\u0000-\u001F\u007F]/g, '').slice(0, max);
+}
+
+function sanitizeDelegationRecord(input) {
+  const out = { ...input };
+  // Source notes and snapshots never belong in Hive. The local worker keeps
+  // them outside the GDrive-mounted repository for prompt execution.
+  delete out.notes;
+  delete out.taskNotes;
+  delete out.sourceSnapshot;
+  for (const key of ['taskTitle', 'taskListId', 'taskId', 'tier', 'currentTier', 'model', 'effort', 'state', 'sessionId', 'customName', 'goal', 'summary', 'error', 'startedAt', 'finishedAt', 'updatedAt', 'createdAt', 'linkState', 'cwd', 'googleStatus', 'importedAt', 'bridgeSessionId']) {
+    if (out[key] !== undefined) out[key] = boundedString(out[key], key === 'summary' ? 500 : 1000);
+  }
+  if (Array.isArray(out.sessionIds)) out.sessionIds = out.sessionIds.filter(v => typeof v === 'string').slice(-8);
+  if (Array.isArray(out.changedPaths)) out.changedPaths = out.changedPaths.filter(v => typeof v === 'string' && !v.startsWith('/') && !v.split('/').includes('..')).slice(0, 200);
+  if (Array.isArray(out.validation)) out.validation = out.validation.filter(v => typeof v === 'string').map(v => boundedString(v, 1000)).slice(0, 100);
+  if (Array.isArray(out.escalationHistory)) out.escalationHistory = out.escalationHistory.slice(-2).map(item => sanitizeDelegationRecord(item));
+  if (out.result && typeof out.result === 'object' && !Array.isArray(out.result)) {
+    out.result = {
+      session_name: boundedString(out.result.session_name, 80),
+      goal: boundedString(out.result.goal, 1000),
+      status: boundedString(out.result.status, 40),
+      summary: boundedString(out.result.summary, 500),
+      changed_paths: Array.isArray(out.result.changed_paths) ? out.result.changed_paths.slice(0, 200) : [],
+      validation: Array.isArray(out.result.validation) ? out.result.validation.slice(0, 100) : [],
+      escalation_brief: boundedString(out.result.escalation_brief, 1000),
+    };
+  }
+  if (out.logTail !== undefined) out.logTail = boundedString(out.logTail, 64 * 1024);
+  return out;
+}
+
+function publicDelegation(record, includeLog = false) {
+  const out = { ...record };
+  if (!includeLog) delete out.logTail;
+  return out;
 }
 
 function loadSettings() {
@@ -463,10 +595,65 @@ function scanCodexSessions() {
       const meta = parseCodexSessionMetaCached(fp, stat);
       const sid = meta.session_id;
       if (!sid) continue;
-      out.push({ id: sid, cwd: meta.cwd || HOME, lastActivity: stat.mtime.toISOString(), path: fp });
+      out.push({
+        id: sid,
+        cwd: meta.cwd || HOME,
+        createdAt: meta.timestamp || stat.birthtime.toISOString(),
+        lastActivity: stat.mtime.toISOString(),
+        parentThreadId: meta.parent_thread_id || null,
+        path: fp,
+      });
     } catch {}
   }
   return out;
+}
+
+function comparablePath(value) {
+  if (!value) return '';
+  const resolved = path.resolve(value);
+  try { return fs.realpathSync.native(resolved); } catch { return resolved; }
+}
+
+function sendTerminalSessionLink(td) {
+  if (!td?.sessionId) return;
+  const message = JSON.stringify({ type: 'session', sessionId: td.sessionId });
+  for (const ws of td.clients) {
+    if (ws.readyState === 1) ws.send(message);
+  }
+}
+
+// A new Codex process chooses its own session UUID. Associate the PTY with the
+// new top-level rollout file that appeared after it was spawned. This is owned by
+// the server because it owns both the process lifetime and the filesystem scan.
+function linkPendingCodexTerminals(codexSessions) {
+  const claimed = new Set(
+    [...terminals.values()].map(td => td.sessionId).filter(Boolean)
+  );
+  const roots = codexSessions.filter(s => !s.parentThreadId);
+  const pending = [...terminals.values()]
+    .filter(td => td.engine === 'codex' && !td.sessionId && td.codexBaseline)
+    .sort((a, b) => a.startedAt - b.startedAt);
+
+  for (const td of pending) {
+    const eligible = roots.filter(s => {
+      if (td.codexBaseline.has(s.id) || claimed.has(s.id)) return false;
+      const createdAt = new Date(s.createdAt || 0).getTime();
+      return Number.isFinite(createdAt)
+        && createdAt >= td.startedAt - 10000
+        && createdAt <= td.startedAt + 120000;
+    });
+    const sameCwd = eligible.filter(s => comparablePath(s.cwd) === comparablePath(td.cwd));
+    const candidates = sameCwd.length ? sameCwd : eligible;
+    candidates.sort((a, b) =>
+      Math.abs(new Date(a.createdAt).getTime() - td.startedAt)
+      - Math.abs(new Date(b.createdAt).getTime() - td.startedAt)
+    );
+    const candidate = candidates[0];
+    if (!candidate) continue;
+    td.sessionId = candidate.id;
+    claimed.add(candidate.id);
+    sendTerminalSessionLink(td);
+  }
 }
 
 // Best-effort liveness: no registry file to read, so find real `codex` processes
@@ -496,7 +683,7 @@ function findLiveCodexCwds() {
 
 app.get('/api/info', (_req, res) => {
   const settings = loadSettings();
-  res.json({ home: HOME, claudeBin, codexBin, codexAvailable, defaultCwd: settings.defaultCwd || HOME });
+  res.json({ home: HOME, claudeBin, codexBin, codexAvailable, terminalAvailable, defaultCwd: settings.defaultCwd || HOME });
 });
 
 app.get('/api/settings', (_req, res) => {
@@ -509,6 +696,67 @@ app.patch('/api/settings', (req, res) => {
   if (defaultCwd !== undefined) update.defaultCwd = defaultCwd || HOME;
   saveSettings(update);
   res.json({ ok: true });
+});
+
+// ── Managed Google Task delegations ─────────────────────────────────────────
+// The runner owns execution and uses a private bearer token for writes. Hive
+// stores only redacted local metadata so a server restart does not lose the
+// managed card or accidentally turn it into an ordinary session.
+
+app.get('/api/delegations', (req, res) => {
+  if (!requireDelegationReadAccess(req, res)) return;
+  const store = loadDelegations();
+  const records = Object.values(store.records || {})
+    .map(record => publicDelegation(record))
+    .sort((a, b) => new Date(b.updatedAt || b.startedAt || 0) - new Date(a.updatedAt || a.startedAt || 0));
+  res.json(records);
+});
+
+app.get('/api/delegations/:id/log', (req, res) => {
+  if (!requireDelegationReadAccess(req, res)) return;
+  const store = loadDelegations();
+  const record = store.records?.[req.params.id];
+  if (!record) return res.status(404).json({ error: 'delegation not found' });
+  res.json({ delegationId: req.params.id, logTail: String(record.logTail || '').slice(-64 * 1024) });
+});
+
+app.post('/api/delegations', (req, res) => {
+  if (!requireRunnerToken(req, res)) return;
+  const input = req.body || {};
+  if (!safeDelegationId(input.delegationId) || !input.taskListId || !input.taskId || !input.taskTitle || !input.tier) {
+    return res.status(400).json({ error: 'delegationId, task list/task IDs, task title, and tier are required' });
+  }
+  const store = loadDelegations();
+  const existing = store.records[input.delegationId];
+  if (existing) return res.json(publicDelegation(existing));
+  const record = sanitizeDelegationRecord({
+    ...input,
+    state: input.state || 'pending',
+    createdAt: new Date().toISOString(),
+    updatedAt: input.updatedAt || new Date().toISOString(),
+  });
+  store.records[input.delegationId] = record;
+  try { saveDelegations(store); } catch (error) { return res.status(500).json({ error: error.message }); }
+  return res.status(201).json(publicDelegation(record));
+});
+
+app.patch('/api/delegations/:id', (req, res) => {
+  if (!requireRunnerToken(req, res)) return;
+  const store = loadDelegations();
+  const existing = store.records?.[req.params.id];
+  if (!existing) return res.status(404).json({ error: 'delegation not found' });
+  const allowed = new Set([
+    'state', 'pid', 'sessionId', 'sessionIds', 'model', 'effort', 'customName', 'goal',
+    'summary', 'result', 'validation', 'changedPaths', 'error', 'startedAt', 'finishedAt',
+    'updatedAt', 'createdAt', 'linkState', 'cwd', 'currentTier', 'attempt', 'attemptCount', 'escalationHistory', 'logTail',
+    'googleStatus', 'importedAt', 'bridgeSessionId', 'taskListId', 'taskId', 'taskTitle',
+  ]);
+  const patch = {};
+  for (const [key, value] of Object.entries(req.body || {})) if (allowed.has(key)) patch[key] = value;
+  const record = sanitizeDelegationRecord({ ...existing, ...patch, updatedAt: new Date().toISOString() });
+  store.records[req.params.id] = record;
+  try { saveDelegations(store); } catch (error) { return res.status(500).json({ error: error.message }); }
+  return res.json(publicDelegation(record));
 });
 
 app.get('/api/sessions', (req, res) => {
@@ -628,7 +876,9 @@ app.get('/api/sessions', (req, res) => {
   // Codex sessions: launch-only support originally (see README "Engines"), now
   // also listed here so a closed/finished one is still discoverable and re-openable
   // via `codex resume`, same as Claude's history entries.
-  for (const cs of scanCodexSessions()) {
+  const codexSessions = scanCodexSessions();
+  linkPendingCodexTerminals(codexSessions);
+  for (const cs of codexSessions) {
     if (sessions.has(cs.id)) continue; // independent UUID spaces, but don't clobber
     const sm = meta[cs.id] || {};
     if (sm.deleted) continue;
@@ -696,6 +946,28 @@ app.get('/api/sessions', (req, res) => {
         }
       }
     }
+  }
+
+  // Managed Codex sessions keep the normal scanner metadata, but the UI uses
+  // the separate delegation record for their primary card. Mark every attempt
+  // session so the client can keep delegated records out of the ordinary grid.
+  const delegationBySession = new Map();
+  for (const delegation of Object.values(loadDelegations().records || {})) {
+    const ids = new Set([
+      ...(Array.isArray(delegation.sessionIds) ? delegation.sessionIds : []),
+      delegation.sessionId,
+    ].filter(Boolean));
+    for (const id of ids) delegationBySession.set(id, delegation);
+  }
+  for (const session of list) {
+    const delegation = delegationBySession.get(session.id);
+    if (!delegation) continue;
+    session.delegated = true;
+    session.delegationId = delegation.delegationId;
+    session.delegationState = delegation.state || null;
+    session.model = delegation.model || session.model || null;
+    session.effort = delegation.effort || session.effort || null;
+    session.customName = delegation.customName || session.customName || null;
   }
 
   res.json(list);
@@ -906,14 +1178,22 @@ app.post('/api/open', (req, res) => {
 
 app.post('/api/terminal', (req, res) => {
   const { engine, model, effort, cwd, sessionId, sessionName, fork, agentsView } = req.body;
+  const isTerminal = engine === 'terminal';
   const isCodex = engine === 'codex';
-  const bin = isCodex ? codexBin : claudeBin;
+  const bin = isTerminal ? terminalBin : (isCodex ? codexBin : claudeBin);
   const args = [];
   let assignedSessionId = null;
+  const startedAt = Date.now();
+  const codexBaseline = isCodex && !sessionId
+    ? new Set(scanCodexSessions().filter(s => !s.parentThreadId).map(s => s.id))
+    : null;
 
   if (agentsView) {
     // Open the claude agents TUI — user can attach to a running agent interactively
     args.push('agents');
+  } else if (isTerminal) {
+    // Start a normal login shell. It has no AI CLI and no Hive session record.
+    args.push('-l');
   } else if (isCodex) {
     // Codex has no --session-id equivalent: it assigns its own UUID internally
     // and it's only discoverable afterward (via `codex resume`/`--last`), so unlike
@@ -966,7 +1246,16 @@ app.post('/api/terminal', (req, res) => {
   }
 
   const termId = `t${Date.now().toString(36)}`;
-  const td = { pty: term, clients: new Set(), buffer: [] };
+  const td = {
+    pty: term,
+    clients: new Set(),
+    buffer: [],
+    engine: isTerminal ? 'terminal' : (isCodex ? 'codex' : 'claude'),
+    cwd: workDir,
+    startedAt,
+    sessionId: sessionId || assignedSessionId || null,
+    codexBaseline,
+  };
   terminals.set(termId, td);
 
   term.onData(data => {
@@ -1013,6 +1302,7 @@ function handleWsConnection(ws, req) {
   if (!td) { ws.close(4004, 'Not found'); return; }
 
   td.clients.add(ws);
+  if (td.sessionId) ws.send(JSON.stringify({ type: 'session', sessionId: td.sessionId }));
   if (td.buffer.length) ws.send(JSON.stringify({ type: 'data', data: td.buffer.join('') }));
 
   ws.on('message', raw => {
