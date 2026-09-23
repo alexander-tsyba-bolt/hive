@@ -114,6 +114,9 @@
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
       background: var(--surface);
+      position: sticky;
+      top: 0;
+      z-index: 10;
     }
 
     .group-bar:empty { display: none; }
@@ -144,7 +147,7 @@
     .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 
     /* ── Sessions panel ── */
-    .sessions-panel { overflow-y: auto; flex-shrink: 0; display: flex; flex-direction: column; }
+    .sessions-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 
     /* ── Side-by-side layout when terminals are open ── */
     .main.layout-split { flex-direction: row; }
@@ -152,8 +155,7 @@
       width: 340px;
       min-width: 240px;
       max-width: 40%;
-      flex-shrink: 0;
-      max-height: unset;
+      flex: 0 0 auto;
       border-right: 1px solid var(--border);
       overflow-y: auto;
     }
@@ -162,12 +164,6 @@
       border-top: none;
       border-left: none;
       min-width: 0;
-    }
-    .main.layout-split .group-bar {
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      background: var(--surface);
     }
     .open-sessions-section { border-bottom: 2px solid rgba(9,105,218,0.2); padding-bottom: 4px; }
     .open-sessions-header { padding: 10px 16px 0; font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em; }
