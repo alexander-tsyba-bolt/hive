@@ -174,3 +174,16 @@ test('session polling does not issue broad waiting-state notifications', () => {
   assert.equal(source.includes('fireTerminalNotification'), false);
   assert.equal(source.includes('fireWaitingNotification'), false);
 });
+
+test('background-agent scanner ignores a normal terminal pane', () => {
+  const context = {
+    openTerminals: new Map([['term', { engine: 'terminal' }]]),
+  };
+  vm.createContext(context);
+  vm.runInContext(functionSource('maybeHandleBgAgentError'), context);
+
+  assert.doesNotThrow(() => context.maybeHandleBgAgentError(
+    'term',
+    'This session is currently running as a background agent.'
+  ));
+});

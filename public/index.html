@@ -2313,7 +2313,9 @@
     const t = openTerminals.get(termId);
     // This diagnostic belongs to Claude's background-agent protocol. Codex can
     // reproduce the words in ordinary terminal output, but has no attach/fork UI.
-    if (!t || t.engine === 'codex' || t.bgHandled) return;
+    // A normal shell can print this text as ordinary output. Only a Hive-managed
+    // Claude pane can act on Claude's background-agent diagnostic.
+    if (!t || t.engine !== 'claude' || t.bgHandled) return;
     t.recentText = ((t.recentText || '') + chunk).slice(-3000);
     if (!/currently running as a background agent|--fork-session to branch off/i.test(t.recentText)) return;
     t.bgHandled = true;
