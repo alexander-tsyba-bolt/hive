@@ -76,12 +76,18 @@ function createEntry(text = '', engine = 'claude') {
 
 test('one interactive prompt produces one notification across a redraw flicker', () => {
   const { context, notifications, timers } = createNotificationController();
-  const entry = createEntry('Enter to select · Esc to cancel');
+  const prompt = [
+    'Would you like to allow this command?',
+    '  1. Yes, proceed',
+    '  2. No, cancel',
+    'Enter to select · Esc to cancel',
+  ];
+  const entry = createEntry(prompt);
 
   context.checkTerminalWaiting('term', entry);
   entry.lineTexts = [''];
   context.checkTerminalWaiting('term', entry);
-  entry.lineTexts = ['Enter to select · Esc to cancel'];
+  entry.lineTexts = prompt;
   context.checkTerminalWaiting('term', entry);
 
   assert.deepEqual(notifications, []);
@@ -103,7 +109,12 @@ test('a cancellable operation without an input control does not notify', () => {
 
 test('automatic Codex review cancels the earlier transient approval prompt', () => {
   const { context, notifications, timers } = createNotificationController();
-  const entry = createEntry('Enter to confirm · Esc to cancel', 'codex');
+  const entry = createEntry([
+    'Would you like to allow this command?',
+    '  1. Yes, proceed',
+    '  2. No, cancel',
+    'Enter to confirm · Esc to cancel',
+  ], 'codex');
 
   context.checkTerminalWaiting('term', entry);
   assert.equal(timers.size, 1);
@@ -114,6 +125,39 @@ test('automatic Codex review cancels the earlier transient approval prompt', () 
 
   assert.equal(context.termCodexWorkingIds.has('session'), true);
   assert.equal(entry._automaticReviewInProgress, true);
+  assert.equal(timers.size, 0);
+  assert.deepEqual(notifications, []);
+});
+
+test('control words in a code listing do not become an input prompt', () => {
+  const { context, notifications, timers } = createNotificationController();
+  const entry = createEntry([
+    'Would you like to allow this command?',
+    '  1. Yes, proceed',
+    '  2. No, cancel',
+    "entry.lineTexts = ['Enter to confirm · Esc to cancel'];",
+  ], 'codex');
+
+  context.checkTerminalWaiting('term', entry);
+
+  assert.equal(context.termWaitingSessionIds.has('session'), false);
+  assert.equal(timers.size, 0);
+  assert.deepEqual(notifications, []);
+});
+
+test('active Codex output cannot become an input prompt', () => {
+  const { context, notifications, timers } = createNotificationController();
+  const entry = createEntry([
+    'Would you like to allow this command?',
+    '  1. Yes, proceed',
+    '  2. No, cancel',
+    'Enter to confirm · Esc to cancel',
+    'Working (4s · esc to interrupt)',
+  ], 'codex');
+
+  context.checkTerminalWaiting('term', entry);
+
+  assert.equal(context.termWaitingSessionIds.has('session'), false);
   assert.equal(timers.size, 0);
   assert.deepEqual(notifications, []);
 });

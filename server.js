@@ -267,7 +267,12 @@ function boundedString(value, max = 1000) {
 
 function sanitizeDelegationRecord(input) {
   const out = { ...input };
-  for (const key of ['taskTitle', 'tier', 'model', 'effort', 'state', 'sessionId', 'customName', 'goal', 'summary', 'error', 'startedAt', 'finishedAt', 'updatedAt', 'linkState']) {
+  // Source notes and snapshots never belong in Hive. The local worker keeps
+  // them outside the GDrive-mounted repository for prompt execution.
+  delete out.notes;
+  delete out.taskNotes;
+  delete out.sourceSnapshot;
+  for (const key of ['taskTitle', 'taskListId', 'taskId', 'tier', 'currentTier', 'model', 'effort', 'state', 'sessionId', 'customName', 'goal', 'summary', 'error', 'startedAt', 'finishedAt', 'updatedAt', 'createdAt', 'linkState', 'cwd', 'googleStatus', 'importedAt', 'bridgeSessionId']) {
     if (out[key] !== undefined) out[key] = boundedString(out[key], key === 'summary' ? 500 : 1000);
   }
   if (Array.isArray(out.sessionIds)) out.sessionIds = out.sessionIds.filter(v => typeof v === 'string').slice(-8);
@@ -743,7 +748,8 @@ app.patch('/api/delegations/:id', (req, res) => {
   const allowed = new Set([
     'state', 'pid', 'sessionId', 'sessionIds', 'model', 'effort', 'customName', 'goal',
     'summary', 'result', 'validation', 'changedPaths', 'error', 'startedAt', 'finishedAt',
-    'updatedAt', 'linkState', 'attempt', 'attemptCount', 'escalationHistory', 'logTail',
+    'updatedAt', 'createdAt', 'linkState', 'cwd', 'currentTier', 'attempt', 'attemptCount', 'escalationHistory', 'logTail',
+    'googleStatus', 'importedAt', 'bridgeSessionId', 'taskListId', 'taskId', 'taskTitle',
   ]);
   const patch = {};
   for (const [key, value] of Object.entries(req.body || {})) if (allowed.has(key)) patch[key] = value;

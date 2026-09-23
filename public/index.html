@@ -545,6 +545,7 @@
     <div class="form-row" id="claude-model-row">
       <label class="form-label">Model</label>
       <select class="form-ctrl" id="new-model">
+        <option value="claude-opus-5.5">claude-opus-5.5 — most capable</option>
         <option value="claude-opus-5">claude-opus-5 — most capable</option>
         <option value="claude-sonnet-5[1m]" selected>claude-sonnet-5 (1M) — balanced</option>
         <option value="claude-sonnet-5">claude-sonnet-5</option>
@@ -565,7 +566,9 @@
     <div class="form-row" id="codex-model-row" style="display:none">
       <label class="form-label">Model</label>
       <select class="form-ctrl" id="new-model-codex">
-        <option value="gpt-5.6-luna" selected>gpt-5.6-luna</option>
+        <option value="gpt-6-luna" selected>gpt-6-luna</option>
+        <option value="gpt-6-sol">gpt-6-sol</option>
+        <option value="gpt-5.6-luna">gpt-5.6-luna</option>
         <option value="gpt-5.6-terra">gpt-5.6-terra</option>
         <option value="gpt-5.6-sol">gpt-5.6-sol</option>
         <option value="gpt-6-astra">gpt-6-astra</option>
@@ -694,14 +697,22 @@
   function displayName(s) { return s.customName || s.name; }
 
   function delegationIsLive(d) {
-    return ['observed', 'pending', 'queued', 'starting', 'running', 'escalating'].includes(d?.state);
+    return ['imported', 'observed', 'pending', 'queued', 'starting', 'running', 'escalating'].includes(d?.state);
   }
 
   function delegationStateClass(state) {
     if (['completed'].includes(state)) return 'delegation-completed';
     if (['needs_human', 'cancelled', 'failed', 'blocked'].includes(state)) return 'delegation-needs_human';
-    if (['observed', 'pending', 'queued', 'starting', 'escalating'].includes(state)) return 'delegation-pending';
+    if (['imported', 'observed', 'pending', 'queued', 'starting', 'escalating', 'succeeded_pending_reconcile'].includes(state)) return 'delegation-pending';
     return 'delegation-live';
+  }
+
+  function delegationStateLabel(state) {
+    return String(state || 'pending').replace(/_/g, ' ');
+  }
+
+  function delegationGoogleStatusLabel(status) {
+    return String(status || 'not synced');
   }
 
   // Codex has no live-process registry file like Claude's, so server.js's
@@ -747,11 +758,20 @@
       if (!workingFound && /esc to interrupt/i.test(text)
         && (entry.engine !== 'codex' || /\b(?:Working|Reviewing approval request)\b/i.test(text))) workingFound = true;
     }
-    const liveText = liveLines.join('\n');
-    const hasCancelControl = /esc to cancel/i.test(liveText);
-    const hasInputControl = /(?:enter|return)\s+to\s+(?:select|confirm|submit|continue)|tab\s+to\s+amend|press\s+(?:enter|return)\s+to\s+(?:select|confirm|submit|continue)/i.test(liveText);
-    const hasExplicitQuestion = /\b(?:do you want to|would you like to|allow this|approve this)\b/i.test(liveText);
-    const promptFound = hasCancelControl && (hasInputControl || hasExplicitQuestion);
+    // A code listing can contain both control phrases in the live rows. Count
+    // only a complete control footer with a nearby question or two choices.
+    // Active work also prints these phrases as ordinary output, so its status
+    // row rules out an interactive prompt.
+    const controlIndex = liveLines.findIndex(line => {
+      const controls = line.trim().split(/\s+[·•|]\s+/);
+      return controls.length > 1
+        && /^esc to cancel$/i.test(controls.at(-1))
+        && controls.some(control => /^(?:(?:enter|return)\s+to\s+(?:select|confirm|submit|continue)|tab\s+to\s+amend|press\s+(?:enter|return)\s+to\s+(?:select|confirm|submit|continue))$/i.test(control));
+    });
+    const promptLines = controlIndex < 0 ? [] : liveLines.slice(controlIndex + 1, controlIndex + 7);
+    const choiceCount = promptLines.filter(line => /^\s*(?:[›❯>]\s*)?\d+[.)]\s+\S/.test(line)).length;
+    const hasExplicitQuestion = promptLines.some(line => /\b(?:do you want to|would you like to|allow this|approve this)\b|\?\s*$/i.test(line));
+    const promptFound = !workingFound && controlIndex >= 0 && (choiceCount >= 2 || hasExplicitQuestion);
     // Codex exposes a positive completion marker. Record normalized durations
     // from a wider tail so a marker from an older turn cannot complete the
     // current turn when the live "Working" row is briefly redrawn.
@@ -1239,11 +1259,13 @@
     return `
       <article class="delegation-card" id="delegation-${esc(d.delegationId)}">
         <div class="card-badges">
-          <span class="badge ${delegationStateClass(state)}"><span class="bdot"></span>${esc(state)}</span>
+          <span class="badge ${delegationStateClass(state)}"><span class="bdot"></span>${esc(delegationStateLabel(state))}</span>
           <span class="badge badge-engine">${esc(d.tier || 'unknown')}</span>${model}${effort}
         </div>
         <div class="delegation-title" title="${esc(d.taskTitle || '')}">${esc(title)}</div>
         <div class="delegation-meta">${esc(d.model || 'model pending')} · ${esc(d.effort || 'effort pending')}${esc(link)}</div>
+        <div class="delegation-meta">Google: ${esc(delegationGoogleStatusLabel(d.googleStatus))}</div>
+        <div class="delegation-meta">Imported ${esc(timeAgo(d.importedAt) || 'unknown')}${d.bridgeSessionId ? ` · bridge ${esc(String(d.bridgeSessionId).slice(0, 24))}` : ''}</div>
         <div class="delegation-meta">Started ${esc(timeAgo(d.startedAt) || 'not started')} · attempt ${esc(d.attempt || d.attemptCount || 0)}</div>
         <div class="delegation-summary${d.error ? ' delegation-error' : ''}" title="${esc(summary)}">${esc(String(summary).replace(/\s+/g, ' '))}</div>
         <div class="delegation-actions">
@@ -1685,8 +1707,8 @@
     document.getElementById('new-cwd').value = '';
     document.getElementById('new-cwd').placeholder = defaultCwd;
     document.getElementById('new-engine').value = 'codex';
-    document.getElementById('new-model-codex').value = 'gpt-5.6-luna';
-    document.getElementById('new-effort-codex').value = 'max';
+    document.getElementById('new-model-codex').value = 'gpt-6-luna';
+    document.getElementById('new-effort-codex').value = 'xhigh';
     onEngineChange();
     openModal('modal-new');
   }
