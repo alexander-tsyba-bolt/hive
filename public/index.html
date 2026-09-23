@@ -774,7 +774,13 @@
     const { promptFound, workingFound, automaticReviewFound, completionSignatures } = readTerminalSignals(entry);
     const isCodex = entry.engine === 'codex';
     const sid = entry.sessionId;
-    if (automaticReviewFound) entry._automaticReviewInProgress = true;
+    if (automaticReviewFound) {
+      entry._automaticReviewInProgress = true;
+      if (entry._attentionConfirmTimer) {
+        clearTimeout(entry._attentionConfirmTimer);
+        entry._attentionConfirmTimer = null;
+      }
+    }
     const wasWaiting = termWaitingSessionIds.has(sid);
     if (promptFound && !wasWaiting) {
       termWaitingSessionIds.add(sid);
@@ -791,16 +797,34 @@
         clearTimeout(entry._attentionClearTimer);
         entry._attentionClearTimer = null;
       }
-      if (!entry._automaticReviewInProgress && !entry._attentionNotificationLatched) {
-        entry._attentionNotificationLatched = true;
-        const s = sessionMap.get(sid);
-        if (s) fireTerminalNotification(termId, s, entry, 'attention');
+      if (!entry._automaticReviewInProgress && !entry._attentionNotificationLatched
+        && !entry._attentionConfirmTimer) {
+        // Codex briefly renders normal approval controls before its automatic
+        // reviewer takes over. Wait for the prompt to remain stable so that
+        // temporary screen cannot alert before "Reviewing approval request"
+        // arrives. A real question stays visible and passes this check.
+        entry._attentionConfirmTimer = setTimeout(() => {
+          entry._attentionConfirmTimer = null;
+          const current = readTerminalSignals(entry);
+          if (entry.closing || entry._automaticReviewInProgress
+            || current.automaticReviewFound || !current.promptFound
+            || entry._attentionNotificationLatched) return;
+          entry._attentionNotificationLatched = true;
+          const s = sessionMap.get(sid);
+          if (s) fireTerminalNotification(termId, s, entry, 'attention');
+        }, 1200);
       }
-    } else if (entry._attentionNotificationLatched && !entry._attentionClearTimer) {
-      entry._attentionClearTimer = setTimeout(() => {
-        entry._attentionClearTimer = null;
-        if (!readTerminalSignals(entry).promptFound) entry._attentionNotificationLatched = false;
-      }, 1200);
+    } else {
+      if (entry._attentionConfirmTimer) {
+        clearTimeout(entry._attentionConfirmTimer);
+        entry._attentionConfirmTimer = null;
+      }
+      if (entry._attentionNotificationLatched && !entry._attentionClearTimer) {
+        entry._attentionClearTimer = setTimeout(() => {
+          entry._attentionClearTimer = null;
+          if (!readTerminalSignals(entry).promptFound) entry._attentionNotificationLatched = false;
+        }, 1200);
+      }
     }
 
     if (workingFound) {
@@ -1974,6 +1998,10 @@
     // Input/resize use whatever socket is current, so they survive reconnects.
     xterm.onData(data => {
       entry._automaticReviewInProgress = false;
+      if (entry._attentionConfirmTimer) {
+        clearTimeout(entry._attentionConfirmTimer);
+        entry._attentionConfirmTimer = null;
+      }
       if (entry.ws && entry.ws.readyState === WebSocket.OPEN) entry.ws.send(JSON.stringify({ type: 'input', data }));
     });
     xterm.onResize(({ cols, rows }) => {
@@ -2070,6 +2098,7 @@
       if (t._replyScrollRaf) cancelAnimationFrame(t._replyScrollRaf);
       if (t._viewportIntentRaf) cancelAnimationFrame(t._viewportIntentRaf);
       if (t._fitRaf) cancelAnimationFrame(t._fitRaf);
+      if (t._attentionConfirmTimer) clearTimeout(t._attentionConfirmTimer);
       if (t._attentionClearTimer) clearTimeout(t._attentionClearTimer);
       if (t._replyReadyTimer) clearTimeout(t._replyReadyTimer);
       renderSessions();

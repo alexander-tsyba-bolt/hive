@@ -35,7 +35,10 @@ function createNotificationController() {
     fireTerminalNotification: (...args) => notifications.push(args.at(-1)),
     setTimeout: callback => {
       const id = nextTimer++;
-      timers.set(id, callback);
+      timers.set(id, () => {
+        timers.delete(id);
+        callback();
+      });
       return id;
     },
     clearTimeout: id => timers.delete(id),
@@ -81,6 +84,9 @@ test('one interactive prompt produces one notification across a redraw flicker',
   entry.lineTexts = ['Enter to select · Esc to cancel'];
   context.checkTerminalWaiting('term', entry);
 
+  assert.deepEqual(notifications, []);
+  assert.equal(timers.size, 1);
+  [...timers.values()][0]();
   assert.deepEqual(notifications, ['attention']);
   assert.equal(timers.size, 0);
 });
@@ -95,16 +101,20 @@ test('a cancellable operation without an input control does not notify', () => {
   assert.equal(context.termWaitingSessionIds.has('session'), false);
 });
 
-test('automatic Codex approval review stays working and suppresses its transient prompt', () => {
-  const { context, notifications } = createNotificationController();
-  const entry = createEntry('Reviewing approval request (21s · esc to interrupt)', 'codex');
+test('automatic Codex review cancels the earlier transient approval prompt', () => {
+  const { context, notifications, timers } = createNotificationController();
+  const entry = createEntry('Enter to confirm · Esc to cancel', 'codex');
 
   context.checkTerminalWaiting('term', entry);
-  entry.lineTexts = ['Enter to confirm · Esc to cancel'];
+  assert.equal(timers.size, 1);
+  assert.deepEqual(notifications, []);
+
+  entry.lineTexts = ['Reviewing approval request (21s · esc to interrupt)'];
   context.checkTerminalWaiting('term', entry);
 
   assert.equal(context.termCodexWorkingIds.has('session'), true);
   assert.equal(entry._automaticReviewInProgress, true);
+  assert.equal(timers.size, 0);
   assert.deepEqual(notifications, []);
 });
 
